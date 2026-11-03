@@ -4,7 +4,7 @@ Fabryka kodu: człowiek podaje zadanie w języku naturalnym, agenci kodujący sa
 je specyfikują, planują, budują, weryfikują i recenzują. Człowiek zatwierdza
 tylko wybrane punkty (zależnie od trybu).
 
-Status: **zaimplementowane kroki 1-4 planu budowy** (adapter CLI, intake, planner, zadania w osobnych git worktree,
+Status: **zaimplementowane: kroki 1-2 oraz planner i reviewer z kroku 4** (adapter CLI, intake, planner, zadania w osobnych git worktree,
 verify, reviewer; tryby `manual`/`guided`/`auto`). Brak: silnik `api`, równoległość, merge do repo docelowego, GUI.
 
 Użycie: `python factory.py "zrób skrypt, który liczy słowa w pliku"`; testy: `python -m unittest`.

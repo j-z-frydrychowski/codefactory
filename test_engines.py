@@ -47,6 +47,17 @@ class FakeLLM:
 
 
 class ApiEngineTest(unittest.TestCase):
+    def setUp(self):
+        p = mock.patch.object(engines, "API_ENABLED", True)
+        p.start()
+        self.addCleanup(p.stop)
+
+    def test_disabled_by_default(self):
+        with mock.patch.object(engines, "API_ENABLED", False):
+            ok, text = engines.run_agent({"type": "api", "base_url": "http://x", "model": "m"}, "x", ".")
+        self.assertFalse(ok)
+        self.assertIn("wyłączony", text)
+
     def run_api(self, script, **engine):
         with FakeLLM(script) as llm, tempfile.TemporaryDirectory() as d:
             e = {"type": "api", "base_url": llm.url, "model": "m", **engine}

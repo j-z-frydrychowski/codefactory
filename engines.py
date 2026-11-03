@@ -8,11 +8,16 @@ import urllib.request
 from pathlib import Path
 
 
+API_ENABLED = False  # wyłączony do czasu testu na prawdziwym modelu (README: kolejność prac)
+
+
 def run_agent(engine, prompt, workdir, timeout=900):
     """Uruchamia agenta w workdir. Zwraca (ok, tekst)."""
     if engine["type"] == "cli":
         return _cli(engine, prompt, workdir, timeout)
     if engine["type"] == "api":
+        if not API_ENABLED:
+            return False, "silnik 'api' jest wyłączony (engines.API_ENABLED), użyj silnika 'cli'"
         return _api(engine, prompt, workdir, timeout)
     raise NotImplementedError(f"silnik '{engine['type']}' nie istnieje")
 

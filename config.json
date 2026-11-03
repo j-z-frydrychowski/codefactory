@@ -2,8 +2,7 @@
   "mode": "guided",
   "engines": {
     "claude": {"type": "cli", "command": "claude -p --permission-mode acceptEdits"},
-    "claude-readonly": {"type": "cli", "command": "claude -p --allowedTools Read Grep Glob"},
-    "local": {"type": "api", "base_url": "http://localhost:11434/v1", "model": "qwen2.5-coder", "allowed_commands": ["python"], "max_steps": 30}
+    "claude-readonly": {"type": "cli", "command": "claude -p --allowedTools Read Grep Glob"}
   },
   "roles": {"intake": "claude", "builder": "claude", "planner": "claude-readonly", "reviewer": "claude-readonly"},
   "verify": "python -m unittest discover",

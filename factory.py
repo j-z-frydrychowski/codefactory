@@ -7,7 +7,7 @@ from pathlib import Path
 from engines import run_agent
 
 ROOT = Path(__file__).parent
-# Bramki zależne od trybu. Merge zatwierdza człowiek zawsze (jeszcze nie zaimplementowany).
+# Bramki zależne od trybu. Merge do repo docelowego zatwierdza człowiek zawsze (jeszcze nie zaimplementowany).
 GATES = {"manual": {"spec", "plan"}, "guided": {"spec"}, "auto": set()}
 
 
@@ -29,13 +29,68 @@ def verify(cmd, workdir):
     return p.returncode == 0, (p.stdout + p.stderr)[-4000:]
 
 
+def git(cwd, *args):
+    return subprocess.run(["git", "-c", "user.name=codefactory", "-c", "user.email=factory@localhost", *args],
+                          cwd=cwd, check=True, capture_output=True, text=True, encoding="utf-8").stdout
+
+
+def parse_plan(text, max_tasks):
+    """Wyciąga z odpowiedzi plannera listę zadań [{title, description}]. ValueError przy złym formacie."""
+    try:
+        tasks = json.loads(text[text.index("["): text.rindex("]") + 1])
+    except ValueError as e:
+        raise ValueError(f"planner nie zwrócił listy JSON: {e}")
+    if not isinstance(tasks, list) or not 0 < len(tasks) <= max_tasks:
+        raise ValueError(f"liczba zadań poza zakresem 1..{max_tasks}")
+    for t in tasks:
+        if not (isinstance(t, dict) and isinstance(t.get("title"), str) and isinstance(t.get("description"), str)):
+            raise ValueError("zadanie bez title/description")
+    return tasks
+
+
+def build_task(cfg, log, spec, task, work, tid):
+    """Jedno zadanie w osobnym worktree. Po zielonym verify+review ff-merge do głównej gałęzi.
+    Zwraca None przy sukcesie albo tekst stanu błędu (worktree zostaje do oględzin)."""
+    wt = work.parent / "wt" / tid
+    git(work, "worktree", "add", "-q", "-b", f"task/{tid}", str(wt))
+    brief = f"# Specyfikacja\n{spec}\n\n# Zadanie do wykonania teraz\n{task['title']}\n{task['description']}"
+    feedback = ""
+    for i in range(1, cfg["limits"]["max_iterations"] + 1):
+        log(f"[{tid} build {i}]")
+        ok, out = agent(cfg, "builder", f"{brief}\n\n# Wynik poprzedniej weryfikacji\n{feedback}", wt)
+        if not ok:
+            log(out)
+            return "failed: builder"
+        passed, feedback = verify(cfg["verify"], wt)
+        log(f"[{tid} verify {i}] {'OK' if passed else 'BŁĄD'}\n{feedback}")
+        if passed and "reviewer" in cfg["roles"]:
+            ok, review = agent(cfg, "reviewer", brief, wt)
+            if not ok:
+                log(review)
+                return "failed: reviewer"
+            passed = review.lstrip().upper().startswith("VERDICT: PASS")
+            feedback = f"Uwagi recenzenta:\n{review}"
+            log(f"[{tid} review {i}] {'PASS' if passed else 'FAIL'}\n{review}")
+        if passed:
+            git(wt, "add", "-A")
+            git(wt, "commit", "-q", "--allow-empty", "-m", task["title"])
+            git(work, "merge", "-q", "--ff-only", f"task/{tid}")
+            git(work, "worktree", "remove", "--force", str(wt))
+            git(work, "branch", "-q", "-d", f"task/{tid}")
+            return None
+    return "failed: limit iteracji"
+
+
 def run(cfg, task, mode=None, base=None):
-    """Intake -> bramka spec -> build/verify w pętli. Zwraca (stan, katalog runa)."""
+    """Intake -> spec -> (planner -> plan) -> zadania po kolei, każde w worktree. Zwraca (stan, katalog runa)."""
     mode = mode or cfg["mode"]
     run_dir = (base or ROOT / "runs") / time.strftime("%Y%m%d-%H%M%S")
     work = run_dir / "workspace"
     work.mkdir(parents=True)
-    subprocess.run(["git", "init", "-q"], cwd=work, check=True)
+    git(work, "init", "-q")
+    git(work, "commit", "-q", "--allow-empty", "-m", "init")  # worktree wymaga commita
+    with open(work / ".git" / "info" / "exclude", "a") as f:
+        f.write("__pycache__/\n")
 
     def finish(state):
         (run_dir / "status.json").write_text(
@@ -56,26 +111,27 @@ def run(cfg, task, mode=None, base=None):
     if not approve("spec", mode):
         return finish("rejected: spec")
 
-    feedback = ""
-    for i in range(1, cfg["limits"]["max_iterations"] + 1):
-        log(f"[build {i}]")
-        ok, out = agent(cfg, "builder", f"# Specyfikacja\n{spec}\n\n# Wynik poprzedniej weryfikacji\n{feedback}", work)
-        if not ok:
-            log(out)
-            return finish("failed: builder")
-        passed, feedback = verify(cfg["verify"], work)
-        log(f"[verify {i}] {'OK' if passed else 'BŁĄD'}\n{feedback}")
-        if passed and "reviewer" in cfg["roles"]:
-            ok, review = agent(cfg, "reviewer", f"# Specyfikacja\n{spec}", work)
+    tasks = [{"title": "Całość", "description": "Zaimplementuj całą specyfikację."}]
+    if "planner" in cfg["roles"]:
+        ok, out = agent(cfg, "planner", f"# Specyfikacja\n{spec}", work)
+        try:
             if not ok:
-                log(review)
-                return finish("failed: reviewer")
-            passed = review.lstrip().upper().startswith("VERDICT: PASS")
-            feedback = f"Uwagi recenzenta:\n{review}"
-            log(f"[review {i}] {'PASS' if passed else 'FAIL'}\n{review}")
-        if passed:
-            return finish("done")
-    return finish("failed: limit iteracji")
+                raise ValueError(out)
+            tasks = parse_plan(out, cfg["limits"].get("max_tasks", 8))
+        except ValueError as e:
+            log(f"[plan] {e}")
+            return finish("failed: planner")
+        plan = "\n".join(f"{n}. **{t['title']}**: {t['description']}" for n, t in enumerate(tasks, 1))
+        (run_dir / "tasks.md").write_text(plan, encoding="utf-8")
+        log(f"[plan]\n{plan}")
+        if not approve("plan", mode):
+            return finish("rejected: plan")
+
+    for n, t in enumerate(tasks, 1):
+        err = build_task(cfg, log, spec, t, work, f"t{n}")
+        if err:
+            return finish(err)
+    return finish("done")
 
 
 if __name__ == "__main__":

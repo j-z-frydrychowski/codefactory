@@ -18,7 +18,10 @@ PASSING = "import unittest\nclass T(unittest.TestCase):\n    def test(self): sel
 FAILING = PASSING.replace("True)", "False)")
 
 
-def fake(builder_code, reviews=()):
+PLAN2 = '```json\n[{"title": "A", "description": "pierwsze"}, {"title": "B", "description": "drugie"}]\n```'
+
+
+def fake(builder_code, reviews=(), plan=""):
     reviews = iter(reviews)
     prompts = []
 
@@ -26,20 +29,54 @@ def fake(builder_code, reviews=()):
         prompts.append(prompt)
         if "INTAKE" in prompt:
             return True, "## Cel\nx"
+        if "PLANNER" in prompt:
+            return True, plan
         if "REVIEWER" in prompt:
             return True, next(reviews)
-        (Path(workdir) / "test_x.py").write_text(builder_code)
+        (Path(workdir) / f"test_x{len(prompts)}.py").write_text(builder_code)
         return True, "ok"
     run_agent.prompts = prompts
     return run_agent
 
 
 class FactoryTest(unittest.TestCase):
-    def go(self, builder_code, mode="auto", reviews=None):
-        cfg = CFG if reviews is None else {**CFG, "roles": {**CFG["roles"], "reviewer": "x"}}
-        self.agent = fake(builder_code, reviews or ())
+    def go(self, builder_code, mode="auto", reviews=None, plan=None):
+        cfg = CFG
+        if reviews is not None:
+            cfg = {**cfg, "roles": {**cfg["roles"], "reviewer": "x"}}
+        if plan is not None:
+            cfg = {**cfg, "roles": {**cfg["roles"], "planner": "x"}}
+        self.agent = fake(builder_code, reviews or (), plan or "")
         with tempfile.TemporaryDirectory() as d, mock.patch.object(factory, "run_agent", self.agent):
-            return factory.run(cfg, "zrób x", mode, Path(d))[0]
+            state, run_dir = factory.run(cfg, "zrób x", mode, Path(d))
+            self.files = sorted(p.name for p in (run_dir / "workspace").glob("test_x*.py"))
+            self.log = factory.git(run_dir / "workspace", "log", "--format=%s")
+            self.worktrees = factory.git(run_dir / "workspace", "worktree", "list").count("\n")
+            return state
+
+    def test_planner_tasks_run_in_order_and_merge_into_main(self):
+        self.assertEqual(self.go(PASSING, plan=PLAN2), "done")
+        self.assertEqual(len(self.files), 2)  # oba zadania wylądowały w głównym workspace
+        self.assertEqual(self.log.split(), ["B", "A", "init"])
+        self.assertEqual(self.worktrees, 1)  # worktree sprzątnięte po merge
+
+    def test_failed_task_stops_run_and_is_not_merged(self):
+        self.assertEqual(self.go(FAILING, plan=PLAN2), "failed: limit iteracji")
+        self.assertEqual(self.files, [])
+        self.assertEqual(self.log.split(), ["init"])
+
+    def test_bad_plan_fails_run(self):
+        self.assertEqual(self.go(PASSING, plan="nie json"), "failed: planner")
+
+    def test_plan_gate_can_reject_in_manual_mode(self):
+        with mock.patch("builtins.input", side_effect=["t", "n"]):
+            self.assertEqual(self.go(PASSING, mode="manual", plan=PLAN2), "rejected: plan")
+
+    def test_parse_plan_limits(self):
+        with self.assertRaises(ValueError):
+            factory.parse_plan("[]", 8)
+        with self.assertRaises(ValueError):
+            factory.parse_plan(PLAN2, 1)
 
     def test_reviewer_fail_sends_feedback_to_builder_then_pass(self):
         self.assertEqual(self.go(PASSING, reviews=["VERDICT: FAIL\n1. brak testu", "VERDICT: PASS\nok"]), "done")

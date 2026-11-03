@@ -4,7 +4,7 @@
     "claude": {"type": "cli", "command": "claude -p --permission-mode acceptEdits"},
     "claude-readonly": {"type": "cli", "command": "claude -p --allowedTools Read Grep Glob"}
   },
-  "roles": {"intake": "claude", "builder": "claude", "reviewer": "claude-readonly"},
+  "roles": {"intake": "claude", "builder": "claude", "planner": "claude-readonly", "reviewer": "claude-readonly"},
   "verify": "python -m unittest discover",
-  "limits": {"max_iterations": 3, "timeout_seconds": 900}
+  "limits": {"max_iterations": 3, "max_tasks": 8, "timeout_seconds": 900}
 }

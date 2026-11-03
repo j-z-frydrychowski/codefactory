@@ -12,6 +12,7 @@ Konfiguracja w `config.json` (silniki, role, komenda weryfikacji, limity).
 
 GUI: `python gui.py` (http://127.0.0.1:8765, tylko localhost) pokazuje runy na żywo. Żeby zatwierdzać
 bramki (spec, plan) przyciskiem zamiast w terminalu, ustaw w `config.json` `"approval": "gui"`.
+Runy można też startować z GUI (formularz u góry; wtedy bramki są zawsze w GUI).
 
 ## Cele
 

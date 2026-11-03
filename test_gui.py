@@ -70,6 +70,28 @@ class GuiTest(unittest.TestCase):
         self.assertEqual(self.req(f"/api/run/{RID}/answer", {"nie": 1})[0], 400)
         self.assertFalse((self.run_dir / "answer.json").exists())
 
+    def test_start_validates_input_and_launches(self):
+        with mock.patch.object(gui, "start_run", return_value=None) as start:
+            self.assertEqual(self.req("/api/start", {"task": "  zrób x ", "mode": "auto"})[0], 200)
+            start.assert_called_once_with("zrób x", "auto")
+            for bad in ({"task": "x", "mode": "yolo"}, {"task": "  ", "mode": "auto"}, {"task": "x" * 5001, "mode": "auto"}, {"mode": "auto"}):
+                self.assertEqual(self.req("/api/start", bad)[0], 400)
+            self.assertEqual(self.req("/api/start", {"task": "x", "mode": "auto"}, {"Origin": "http://evil.example"})[0], 403)
+            self.assertEqual(start.call_count, 1)
+
+    def test_start_reports_launch_failure(self):
+        with mock.patch.object(gui, "start_run", return_value="nie wystartował"):
+            code, body = self.req("/api/start", {"task": "x", "mode": "auto"})
+        self.assertEqual((code, json.loads(body)["error"]), (500, "nie wystartował"))
+
+    def test_start_run_passes_task_after_double_dash(self):
+        with mock.patch.object(gui.subprocess, "Popen") as popen:
+            popen.return_value.wait.side_effect = gui.subprocess.TimeoutExpired("x", 1)
+            self.assertIsNone(gui.start_run("--help", "guided"))
+        argv = popen.call_args[0][0]
+        self.assertEqual(argv[-2:], ["--", "--help"])  # zadanie nie może zostać wzięte za flagę
+        self.assertIn("gui", argv)
+
     def test_factory_approve_waits_for_gui_answer(self):
         def human():
             while not (self.run_dir / "pending.json").exists():

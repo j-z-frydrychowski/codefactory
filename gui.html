@@ -34,17 +34,36 @@ details{margin-top:10px;border:1px solid var(--line);border-radius:8px}
 summary{padding:8px 12px;cursor:pointer;font-weight:600}
 pre{margin:0;padding:12px;overflow:auto;max-height:420px;font:13px/1.45 ui-monospace,Consolas,monospace;white-space:pre-wrap;word-break:break-word;border-top:1px solid var(--line)}
 .l-ok{color:var(--ok)}.l-bad{color:var(--bad)}.l-tag{color:var(--acc);font-weight:600}
+#new{padding:12px;margin-bottom:12px}
+#new textarea{width:100%;min-height:84px;resize:vertical;font:inherit;padding:8px;border-radius:8px;border:1px solid var(--line);background:var(--bg);color:var(--fg)}
+#new .row{display:flex;gap:8px;margin-top:8px}
+#new select,#new button{font:inherit;padding:7px 10px;border-radius:8px;border:1px solid var(--line);background:var(--card);color:var(--fg)}
+#new button{flex:1;background:var(--acc);border-color:var(--acc);color:#fff;font-weight:600;cursor:pointer}
+#new button:disabled{opacity:.5;cursor:default}
+#msg{color:var(--bad);font-size:13px;margin-top:6px}
 .empty{color:var(--mut);padding:30px;text-align:center}
 </style>
 </head>
 <body>
 <header>CodeFactory <small>podgląd na żywo</small></header>
 <div class="wrap">
-  <div id="runs" class="card"></div>
+  <div>
+    <form id="new" class="card">
+      <textarea id="task" placeholder="Opisz, co ma zbudować fabryka (zwykłym językiem)" maxlength="5000" required></textarea>
+      <div class="row">
+        <select id="mode" title="Tryb autonomii">
+          <option value="guided">guided</option><option value="manual">manual</option><option value="auto">auto</option>
+        </select>
+        <button id="go">Uruchom</button>
+      </div>
+      <div id="msg"></div>
+    </form>
+    <div id="runs" class="card"></div>
+  </div>
   <div id="main" class="card"><div class="empty">Wybierz run z listy.</div></div>
 </div>
 <script>
-let sel = null, lastRaw = '', lastSel = null;
+let sel = null, lastRaw = '', lastSel = null, awaitNew = null, lastCount = 0;
 const $ = (id) => document.getElementById(id);
 const el = (tag, cls, txt) => { const e = document.createElement(tag); if (cls) e.className = cls; if (txt != null) e.textContent = txt; return e; };
 
@@ -66,7 +85,9 @@ async function listRuns() {
     b.onclick = () => { sel = r.id; refresh(); };
     box.append(b);
   }
+  if (awaitNew !== null && runs.length > awaitNew) { sel = runs[0].id; awaitNew = null; }  // świeżo wystartowany run
   if (!sel && runs.length) { sel = runs[0].id; }
+  lastCount = runs.length;
 }
 
 function lastMatch(log, re) { const m = log.split('\n').filter((l) => re.test(l)); return m.length ? m[m.length - 1] : null; }
@@ -99,6 +120,20 @@ function logView(log) {
   }
   return pre;
 }
+
+$('new').onsubmit = async (e) => {
+  e.preventDefault();
+  const btn = $('go'), msg = $('msg');
+  btn.disabled = true; msg.textContent = '';
+  const before = lastCount;  // przed POST: run może pojawić się na liście, zanim odpowiedź wróci
+  try {
+    const r = await fetch('/api/start', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ task: $('task').value, mode: $('mode').value }) });
+    if (!r.ok) throw new Error((await r.json()).error || r.status);
+    $('task').value = ''; awaitNew = before; refresh();
+  } catch (err) { msg.textContent = 'Nie udało się wystartować: ' + err.message; }
+  btn.disabled = false;
+};
 
 async function answer(approve) {
   await fetch(`/api/run/${sel}/answer`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ approve }) });

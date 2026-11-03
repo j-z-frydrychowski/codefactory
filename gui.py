@@ -2,8 +2,12 @@
 import argparse
 import json
 import re
+import subprocess
+import sys
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+
+from factory import GATES
 
 ROOT = Path(__file__).parent
 RUN_ID = re.compile(r"\d{8}-\d{6}")
@@ -21,6 +25,18 @@ def jread(p):
         return json.loads(text(p))
     except ValueError:  # plik w trakcie zapisu albo brak
         return None
+
+
+def start_run(task, mode):
+    """Odpala factory.py jako osobny proces z bramkami przez GUI. Zwraca tekst błędu albo None."""
+    (ROOT / "runs").mkdir(exist_ok=True)
+    with open(ROOT / "runs" / "_gui.log", "ab") as log:
+        p = subprocess.Popen([sys.executable, str(ROOT / "factory.py"), "--mode", mode, "--approval", "gui", "--", task],
+                             cwd=ROOT, stdin=subprocess.DEVNULL, stdout=log, stderr=log)
+    try:
+        return f"factory.py zakończył się kodem {p.wait(timeout=1)} (zobacz runs/_gui.log)"
+    except subprocess.TimeoutExpired:
+        return None  # nadal działa = wystartował
 
 
 def make_server(runs, port=8765):
@@ -51,22 +67,37 @@ def make_server(runs, port=8765):
             self.reply(200, {"status": jread(d / "status.json") or {"state": "running"}, "pending": jread(d / "pending.json"),
                              "spec": text(d / "spec.md"), "tasks": text(d / "tasks.md"), "log": text(d / "log.md")})
 
+        def origin_ok(self):  # blokuje POST ze stron otwartych w innych zakładkach
+            o = self.headers.get("Origin")
+            return not o or o in (f"http://127.0.0.1:{self.server.server_port}", f"http://localhost:{self.server.server_port}")
+
+        def body(self):
+            try:
+                return json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))))
+            except ValueError:
+                return None
+
         def do_POST(self):
             parts = self.path.strip("/").split("/")
+            if not self.origin_ok():
+                return self.reply(403, {"error": "zły origin"})
+            if parts == ["api", "start"]:
+                b = self.body()
+                task, mode = (b.get("task"), b.get("mode")) if isinstance(b, dict) else (None, None)
+                if not (isinstance(task, str) and 0 < len(task.strip()) <= 5000 and mode in GATES):
+                    return self.reply(400, {"error": "potrzebne: task (1-5000 znaków) i mode"})
+                err = start_run(task.strip(), mode)
+                return self.reply(500 if err else 200, {"error": err} if err else {"ok": True})
             d = self.run_dir(parts[2]) if len(parts) == 4 and parts[:2] == ["api", "run"] and parts[3] == "answer" else None
             if not d:
                 return self.reply(404, {"error": "nie ma"})
-            origin = self.headers.get("Origin")  # blokuje POST ze stron otwartych w innych zakładkach
-            if origin and origin not in (f"http://127.0.0.1:{self.server.server_port}", f"http://localhost:{self.server.server_port}"):
-                return self.reply(403, {"error": "zły origin"})
             pending = jread(d / "pending.json")
             if not pending:
                 return self.reply(409, {"error": "brak oczekującej bramki"})
-            try:
-                approve = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))))["approve"] is True
-            except (ValueError, KeyError, TypeError):
+            b = self.body()
+            if not isinstance(b, dict) or "approve" not in b:
                 return self.reply(400, {"error": "zły JSON"})
-            (d / "answer.json").write_text(json.dumps({"gate": pending["gate"], "approve": approve}), encoding="utf-8")
+            (d / "answer.json").write_text(json.dumps({"gate": pending["gate"], "approve": b["approve"] is True}), encoding="utf-8")
             self.reply(200, {"ok": True})
 
         def log_message(self, *a):

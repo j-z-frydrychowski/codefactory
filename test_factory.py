@@ -18,19 +18,38 @@ PASSING = "import unittest\nclass T(unittest.TestCase):\n    def test(self): sel
 FAILING = PASSING.replace("True)", "False)")
 
 
-def fake(builder_code):
+def fake(builder_code, reviews=()):
+    reviews = iter(reviews)
+    prompts = []
+
     def run_agent(engine, prompt, workdir, timeout):
+        prompts.append(prompt)
         if "INTAKE" in prompt:
             return True, "## Cel\nx"
+        if "REVIEWER" in prompt:
+            return True, next(reviews)
         (Path(workdir) / "test_x.py").write_text(builder_code)
         return True, "ok"
+    run_agent.prompts = prompts
     return run_agent
 
 
 class FactoryTest(unittest.TestCase):
-    def go(self, builder_code, mode="auto"):
-        with tempfile.TemporaryDirectory() as d, mock.patch.object(factory, "run_agent", fake(builder_code)):
-            return factory.run(CFG, "zrób x", mode, Path(d))[0]
+    def go(self, builder_code, mode="auto", reviews=None):
+        cfg = CFG if reviews is None else {**CFG, "roles": {**CFG["roles"], "reviewer": "x"}}
+        self.agent = fake(builder_code, reviews or ())
+        with tempfile.TemporaryDirectory() as d, mock.patch.object(factory, "run_agent", self.agent):
+            return factory.run(cfg, "zrób x", mode, Path(d))[0]
+
+    def test_reviewer_fail_sends_feedback_to_builder_then_pass(self):
+        self.assertEqual(self.go(PASSING, reviews=["VERDICT: FAIL\n1. brak testu", "VERDICT: PASS\nok"]), "done")
+        self.assertIn("brak testu", self.agent.prompts[3])  # drugi build widzi uwagi recenzenta
+
+    def test_reviewer_fail_every_time_hits_limit(self):
+        self.assertEqual(self.go(PASSING, reviews=["VERDICT: FAIL\nx"] * 2), "failed: limit iteracji")
+
+    def test_reviewer_skipped_when_verify_fails(self):
+        self.assertEqual(self.go(FAILING, reviews=[]), "failed: limit iteracji")  # next(reviews) would raise
 
     def test_done_when_verify_passes(self):
         self.assertEqual(self.go(PASSING), "done")

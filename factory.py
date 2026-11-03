@@ -65,6 +65,14 @@ def run(cfg, task, mode=None, base=None):
             return finish("failed: builder")
         passed, feedback = verify(cfg["verify"], work)
         log(f"[verify {i}] {'OK' if passed else 'BŁĄD'}\n{feedback}")
+        if passed and "reviewer" in cfg["roles"]:
+            ok, review = agent(cfg, "reviewer", f"# Specyfikacja\n{spec}", work)
+            if not ok:
+                log(review)
+                return finish("failed: reviewer")
+            passed = review.lstrip().upper().startswith("VERDICT: PASS")
+            feedback = f"Uwagi recenzenta:\n{review}"
+            log(f"[review {i}] {'PASS' if passed else 'FAIL'}\n{review}")
         if passed:
             return finish("done")
     return finish("failed: limit iteracji")

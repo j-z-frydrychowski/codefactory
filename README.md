@@ -4,8 +4,8 @@ Fabryka kodu: człowiek podaje zadanie w języku naturalnym, agenci kodujący sa
 je specyfikują, planują, budują, weryfikują i recenzują. Człowiek zatwierdza
 tylko wybrane punkty (zależnie od trybu).
 
-Status: **zaimplementowane kroki 1-2 planu budowy** (adapter CLI, pętla intake -> build -> verify,
-tryby `manual`/`guided`/`auto`). Brak: planner, reviewer, silnik `api`, worktree, merge, GUI.
+Status: **zaimplementowane kroki 1-2 planu budowy** + reviewer (adapter CLI, pętla intake -> build -> verify -> review,
+tryby `manual`/`guided`/`auto`). Brak: planner, silnik `api`, worktree, merge, GUI.
 
 Użycie: `python factory.py "zrób skrypt, który liczy słowa w pliku"`; testy: `python -m unittest`.
 Konfiguracja w `config.json` (silniki, role, komenda weryfikacji, limity).

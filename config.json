@@ -1,0 +1,9 @@
+{
+  "mode": "guided",
+  "engines": {
+    "claude": {"type": "cli", "command": "claude -p --permission-mode acceptEdits"}
+  },
+  "roles": {"intake": "claude", "builder": "claude"},
+  "verify": "python -m unittest discover",
+  "limits": {"max_iterations": 3, "timeout_seconds": 900}
+}

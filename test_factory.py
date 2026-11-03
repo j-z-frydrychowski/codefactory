@@ -106,7 +106,7 @@ class FactoryTest(unittest.TestCase):
 
     def test_unknown_engine_type(self):
         with self.assertRaises(NotImplementedError):
-            engines.run_agent({"type": "api"}, "x", ".")
+            engines.run_agent({"type": "grpc"}, "x", ".")
 
 
 if __name__ == "__main__":

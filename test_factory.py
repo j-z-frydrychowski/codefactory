@@ -1,4 +1,7 @@
+import json
 import re
+import shutil
+import subprocess
 import sys
 import tempfile
 import threading
@@ -161,6 +164,54 @@ class FactoryTest(unittest.TestCase):
         cp1250 = io.TextIOWrapper(io.BytesIO(), encoding="cp1250")  # jak konsola/plik przy przekierowaniu na Windows
         with mock.patch.object(sys, "stdout", cp1250):
             self.assertEqual(self.go(PASSING, plan=plan), "done")
+
+    def test_hollow_verify_command_fails_before_any_agent_runs(self):
+        cfg = {**CFG, "verify": f'"{sys.executable}" -c "pass"'}  # przechodzi zawsze, też na pustym projekcie
+        agent = mock.Mock(side_effect=AssertionError("agent nie powinien być wołany"))
+        with tempfile.TemporaryDirectory() as d, mock.patch.object(factory, "run_agent", agent):
+            self.assertEqual(factory.run(cfg, "zrób x", "auto", Path(d))[0], "failed: verify")
+
+    def test_canary_can_be_disabled(self):
+        cfg = {**CFG, "verify": f'"{sys.executable}" -c "pass"', "verify_canary": False}
+        with tempfile.TemporaryDirectory() as d, mock.patch.object(factory, "run_agent", fake(PASSING)):
+            self.assertEqual(factory.run(cfg, "zrób x", "auto", Path(d))[0], "done")
+
+    @unittest.skipUnless(shutil.which("node"), "brak node")
+    def test_node_test_without_tests_is_caught_as_hollow(self):
+        self.assertFalse(factory.verify_is_meaningful("node --test"))  # kod 0 na pustym katalogu
+        self.assertTrue(factory.verify_is_meaningful(f'"{sys.executable}" -m unittest discover'))
+
+    def nonempty(self, code):
+        script = str(Path(factory.ROOT) / "tools" / "nonempty.py")
+        return subprocess.run([sys.executable, script, sys.executable, "-c", code], capture_output=True, text=True).returncode
+
+    def test_nonempty_wrapper_fails_when_no_test_ran_and_keeps_real_exit_codes(self):
+        self.assertEqual(self.nonempty("print('ℹ tests 0')"), 1)
+        self.assertEqual(self.nonempty("print('Ran 0 tests in 0.0s')"), 1)
+        self.assertEqual(self.nonempty("print('ℹ tests 3')"), 0)
+        self.assertEqual(self.nonempty("import sys; print('x'); sys.exit(3)"), 3)
+
+    @unittest.skipUnless(shutil.which("node"), "brak node")
+    def test_node_preset_is_meaningful_and_passes_with_a_test(self):
+        cmd = json.loads((Path(factory.ROOT) / "config.json").read_text(encoding="utf-8"))["verify_presets"]["node"]
+        cmd = cmd.replace("{root}", Path(factory.ROOT).as_posix())
+        self.assertTrue(factory.verify_is_meaningful(cmd))
+        with tempfile.TemporaryDirectory() as d:
+            (Path(d) / "a.test.js").write_text("require('node:test')('x', () => {})")
+            self.assertTrue(factory.verify(cmd, d)[0])
+
+    def test_agents_see_verify_command_and_resume_keeps_it(self):
+        cfg = {**CFG, "verify": f'"{sys.executable}" -m unittest discover -v'}
+        first = fake(FAILING)
+        with tempfile.TemporaryDirectory() as d:
+            with mock.patch.object(factory, "run_agent", first):
+                _, run_dir = factory.run(cfg, "zrób x", "auto", Path(d))
+            self.assertTrue(all("unittest discover -v" in p for p in first.prompts))
+            second = fake(PASSING)
+            with mock.patch.object(factory, "run_agent", second):  # resume z configiem o innej komendzie
+                state, _ = factory.resume({**CFG, "verify": "false"}, run_dir)
+        self.assertEqual(state, "done")
+        self.assertTrue(all("unittest discover -v" in p for p in second.prompts))
 
     def test_bad_plan_fails_run(self):
         self.assertEqual(self.go(PASSING, plan="nie json"), "failed: planner")

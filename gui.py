@@ -39,8 +39,13 @@ def spawn(*args):
         return None  # nadal działa = wystartował
 
 
-def start_run(task, mode):
-    return spawn("--mode", mode, "--", task)
+def presets():
+    """Nazwy presetów weryfikacji z config.json (GUI nie przyjmuje surowych komend: to byłoby uruchamianie dowolnego kodu z przeglądarki)."""
+    return list((jread(ROOT / "config.json") or {}).get("verify_presets", {}))
+
+
+def start_run(task, mode, verify=None):
+    return spawn("--mode", mode, *(["--verify", verify] if verify else []), "--", task)
 
 
 def resume_run(rid):
@@ -65,6 +70,8 @@ def make_server(runs, port=8765):
             parts = self.path.strip("/").split("/")
             if self.path == "/":
                 return self.reply(200, (ROOT / "gui.html").read_bytes(), "text/html; charset=utf-8")
+            if parts == ["api", "presets"]:
+                return self.reply(200, presets())
             if parts == ["api", "runs"]:
                 ids = sorted((d.name for d in runs.glob("*") if RUN_ID.fullmatch(d.name)), reverse=True)
                 return self.reply(200, [{"id": i, "status": jread(runs / i / "status.json") or {"state": "running"}}
@@ -91,10 +98,11 @@ def make_server(runs, port=8765):
                 return self.reply(403, {"error": "zły origin"})
             if parts == ["api", "start"]:
                 b = self.body()
-                task, mode = (b.get("task"), b.get("mode")) if isinstance(b, dict) else (None, None)
-                if not (isinstance(task, str) and 0 < len(task.strip()) <= 5000 and mode in GATES):
-                    return self.reply(400, {"error": "potrzebne: task (1-5000 znaków) i mode"})
-                err = start_run(task.strip(), mode)
+                task, mode, verify = (b.get("task"), b.get("mode"), b.get("verify")) if isinstance(b, dict) else (None, None, None)
+                if not (isinstance(task, str) and 0 < len(task.strip()) <= 5000 and mode in GATES
+                        and (verify is None or verify in presets())):
+                    return self.reply(400, {"error": "potrzebne: task (1-5000 znaków), mode i opcjonalnie verify (preset z configu)"})
+                err = start_run(task.strip(), mode, verify)
                 return self.reply(500 if err else 200, {"error": err} if err else {"ok": True})
             d = self.run_dir(parts[2]) if len(parts) == 4 and parts[:2] == ["api", "run"] and parts[3] in ("answer", "resume") else None
             if not d:

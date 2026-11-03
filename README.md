@@ -10,6 +10,14 @@ verify, reviewer, GUI; tryby `manual`/`guided`/`auto`). Brak: merge do repo doce
 Użycie: `python factory.py "zrób skrypt, który liczy słowa w pliku"`; testy: `python -m unittest`.
 Konfiguracja w `config.json` (silniki, role, komenda weryfikacji, limity).
 
+Weryfikacja (`verify`) to komenda uruchamiana w katalogu projektu; jej kod wyjścia decyduje o przejściu dalej, a agenci
+widzą ją w każdym prompcie. Dla nowego runu wybierasz ją flagą `--verify <preset|komenda>` albo listą w GUI. Presety są w
+`config.json` (`verify_presets`: `python`, `node`). Przed startem fabryka sprawdza, czy komenda **nie przechodzi na pustym
+projekcie** (`node --test` bez testów kończy się kodem 0, więc preset `node` używa opakowania `tools/nonempty.py`);
+wyłączysz to przez `"verify_canary": false`. Uwaga: na Pythonie <3.12 `unittest discover` bez testów też kończy się
+kodem 0 i canary go odrzuci. Użyj wtedy `python -m pytest`. Wybrana komenda zapisuje się w `progress.json` i wznowienie
+używa tej samej.
+
 GUI: `python gui.py` (http://127.0.0.1:8765, tylko localhost) pokazuje runy na żywo. Żeby zatwierdzać
 bramki (spec, plan) przyciskiem zamiast w terminalu, ustaw w `config.json` `"approval": "gui"`.
 Przerwany lub nieudany run wznowisz: `python factory.py --resume <id z runs/>` (albo przyciskiem „Wznów run" w GUI dla runów

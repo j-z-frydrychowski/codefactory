@@ -54,6 +54,7 @@ pre{margin:0;padding:12px;overflow:auto;max-height:420px;font:13px/1.45 ui-monos
         <select id="mode" title="Tryb autonomii">
           <option value="guided">guided</option><option value="manual">manual</option><option value="auto">auto</option>
         </select>
+        <select id="verify" title="Weryfikacja (komenda testów)"></select>
         <button id="go">Uruchom</button>
       </div>
       <div id="msg"></div>
@@ -128,7 +129,7 @@ $('new').onsubmit = async (e) => {
   const before = lastCount;  // przed POST: run może pojawić się na liście, zanim odpowiedź wróci
   try {
     const r = await fetch('/api/start', { method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ task: $('task').value, mode: $('mode').value }) });
+      body: JSON.stringify({ task: $('task').value, mode: $('mode').value, verify: $('verify').value || null }) });
     if (!r.ok) throw new Error((await r.json()).error || r.status);
     $('task').value = ''; awaitNew = before; refresh();
   } catch (err) { msg.textContent = 'Nie udało się wystartować: ' + err.message; }
@@ -184,6 +185,11 @@ async function showRun() {
 async function refresh() {
   try { await listRuns(); await showRun(); } catch (e) { $('main').replaceChildren(el('div', 'empty', 'Brak połączenia z serwerem GUI.')); }
 }
+fetch('/api/presets').then((r) => r.json()).then((ps) => {
+  const sel = $('verify');
+  sel.append(new Option('weryfikacja: domyślna', ''));
+  for (const p of ps) sel.append(new Option('weryfikacja: ' + p, p));
+});
 refresh();
 setInterval(refresh, 2000);
 </script>

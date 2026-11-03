@@ -73,11 +73,26 @@ class GuiTest(unittest.TestCase):
     def test_start_validates_input_and_launches(self):
         with mock.patch.object(gui, "start_run", return_value=None) as start:
             self.assertEqual(self.req("/api/start", {"task": "  zrób x ", "mode": "auto"})[0], 200)
-            start.assert_called_once_with("zrób x", "auto")
+            start.assert_called_once_with("zrób x", "auto", None)
             for bad in ({"task": "x", "mode": "yolo"}, {"task": "  ", "mode": "auto"}, {"task": "x" * 5001, "mode": "auto"}, {"mode": "auto"}):
                 self.assertEqual(self.req("/api/start", bad)[0], 400)
             self.assertEqual(self.req("/api/start", {"task": "x", "mode": "auto"}, {"Origin": "http://evil.example"})[0], 403)
             self.assertEqual(start.call_count, 1)
+
+    def test_start_accepts_only_known_verify_presets(self):
+        with mock.patch.object(gui, "presets", return_value=["python", "node"]),                 mock.patch.object(gui, "start_run", return_value=None) as start:
+            self.assertEqual(self.req("/api/start", {"task": "x", "mode": "auto", "verify": "node"})[0], 200)
+            start.assert_called_once_with("x", "auto", "node")
+            self.assertEqual(self.req("/api/start", {"task": "x", "mode": "auto", "verify": "rm -rf /"})[0], 400)
+            self.assertEqual(json.loads(self.req("/api/presets")[1]), ["python", "node"])
+
+    def test_start_run_passes_verify_preset_to_factory(self):
+        with mock.patch.object(gui.subprocess, "Popen") as popen:
+            popen.return_value.wait.side_effect = gui.subprocess.TimeoutExpired("x", 1)
+            gui.start_run("zadanie", "auto", "node")
+        argv = popen.call_args[0][0]
+        self.assertEqual(argv[argv.index("--verify") + 1], "node")
+        self.assertEqual(argv[-2:], ["--", "zadanie"])
 
     def test_start_reports_launch_failure(self):
         with mock.patch.object(gui, "start_run", return_value="nie wystartował"):

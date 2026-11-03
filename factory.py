@@ -3,6 +3,7 @@ import json
 import shutil
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
@@ -20,7 +21,8 @@ GATES = {"manual": {"spec", "plan"}, "guided": {"spec"}, "auto": set()}
 def agent(cfg, role, prompt, workdir):
     engine = cfg["engines"][cfg["roles"][role]]
     template = (ROOT / "agents" / f"{role}.md").read_text(encoding="utf-8")
-    return run_agent(engine, f"{template}\n\n{prompt}", workdir, cfg["limits"]["timeout_seconds"])
+    note = f"# Komenda weryfikacji projektu\n`{cfg['verify']}` (uruchamiana w katalogu projektu; testy i kryteria muszą się z nią zgadzać)"
+    return run_agent(engine, f"{template}\n\n{prompt}\n\n{note}", workdir, cfg["limits"]["timeout_seconds"])
 
 
 POLL = 0.5  # sekundy między sprawdzeniami odpowiedzi z GUI
@@ -53,6 +55,12 @@ def verify(cmd, workdir):
     p = subprocess.run(cmd, shell=True, cwd=workdir, capture_output=True,
                        text=True, encoding="utf-8", errors="replace")
     return p.returncode == 0, (p.stdout + p.stderr)[-4000:]
+
+
+def verify_is_meaningful(cmd):
+    """Komenda weryfikacji nie może przechodzić na pustym projekcie (np. `node --test` bez testów kończy się kodem 0)."""
+    with tempfile.TemporaryDirectory() as empty:
+        return not verify(cmd, empty)[0]
 
 
 def git(cwd, *args):
@@ -199,6 +207,7 @@ def execute(cfg, run_dir, task, mode):
     Postęp (zatwierdzenia, plan, gotowe zadania) w progress.json umożliwia wznowienie."""
     work = run_dir / "workspace"
     progress = jload(run_dir / "progress.json") or {}
+    cfg = {**cfg, "verify": progress.get("verify", cfg["verify"])}  # wznowienie używa tej samej komendy co pierwszy start
     progress_lock = threading.Lock()
 
     def save(**kw):
@@ -229,6 +238,10 @@ def execute(cfg, run_dir, task, mode):
             with open(run_dir / "log.md", "a", encoding="utf-8") as f:
                 f.write(text + "\n")
 
+    if cfg.get("verify_canary", True) and not verify_is_meaningful(cfg["verify"]):
+        log(f"[verify] komenda `{cfg['verify']}` przechodzi na pustym projekcie, więc niczego nie sprawdza. Popraw ją.")
+        return finish("failed: verify")
+    save(verify=cfg["verify"])
     spec_file = run_dir / "spec.md"
     if spec_file.exists():
         spec = spec_file.read_text(encoding="utf-8")
@@ -290,12 +303,15 @@ if __name__ == "__main__":
     ap.add_argument("--resume", metavar="RUN", help="wznów run (id z runs/ albo ścieżka) zamiast zaczynać nowy")
     ap.add_argument("--mode", choices=GATES)
     ap.add_argument("--approval", choices=["terminal", "gui"], help="gdzie zatwierdzać bramki (domyślnie z configu)")
+    ap.add_argument("--verify", help="komenda weryfikacji albo nazwa presetu z configu (verify_presets); dla nowego runu")
     ap.add_argument("--config", default=str(ROOT / "config.json"))
     a = ap.parse_args()
     if bool(a.task) == bool(a.resume):
         ap.error("podaj zadanie albo --resume RUN (jedno z dwóch)")
     cfg = json.loads(Path(a.config).read_text(encoding="utf-8"))
     cfg["approval"] = a.approval or cfg.get("approval", "terminal")
+    if a.verify:
+        cfg["verify"] = cfg.get("verify_presets", {}).get(a.verify, a.verify).replace("{root}", ROOT.as_posix())
     if a.resume:
         state, d = resume(cfg, Path(a.resume) if Path(a.resume).is_dir() else ROOT / "runs" / a.resume, a.mode)
     else:

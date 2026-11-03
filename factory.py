@@ -133,8 +133,12 @@ def build_task(cfg, log, spec, task, work, tid, base):
         git(wt, "commit", "-q", "--allow-empty", "-m", task["title"])
         with LOCK:
             if git_try(work, "merge", "-q", "--ff-only", branch)[0] == 0:
-                git(work, "worktree", "remove", "--force", str(wt))
-                git(work, "branch", "-q", "-d", branch)
+                # zadanie jest już scalone: sprzątanie jest best-effort (na Windowsie pozostały po przerwanym runie proces
+                # potrafi trzymać katalog), a jego porażka nie może unieważnić wyniku
+                git_try(work, "worktree", "remove", "--force", str(wt))
+                shutil.rmtree(wt, ignore_errors=True)
+                git_try(work, "worktree", "prune")
+                git_try(work, "branch", "-q", "-D", branch)
                 return None
         if git_try(wt, "merge", "--no-edit", base)[0] == 0:
             rebuild, feedback = False, ""

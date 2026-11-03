@@ -213,6 +213,23 @@ class FactoryTest(unittest.TestCase):
         self.assertEqual(state, "done")
         self.assertTrue(all("unittest discover -v" in p for p in second.prompts))
 
+    def test_cleanup_failure_after_merge_does_not_fail_the_task(self):
+        real_try, real = factory.git_try, factory.git
+
+        def flaky_try(cwd, *args):
+            if args[:2] == ("worktree", "remove"):
+                return 255, "Directory not empty"  # jak na Windowsie, gdy proces trzyma katalog
+            return real_try(cwd, *args)
+
+        def flaky(cwd, *args):
+            if args[:2] == ("worktree", "remove"):
+                raise subprocess.CalledProcessError(255, "git")
+            return real(cwd, *args)
+        with mock.patch.object(factory, "git_try", flaky_try), mock.patch.object(factory, "git", flaky):
+            self.assertEqual(self.go(PASSING, plan=PLAN2), "done")
+        self.assertEqual(self.log.split(), ["B", "A", "init"])  # oba zadania scalone
+        self.assertEqual(self.worktrees, 1)
+
     def test_bad_plan_fails_run(self):
         self.assertEqual(self.go(PASSING, plan="nie json"), "failed: planner")
 

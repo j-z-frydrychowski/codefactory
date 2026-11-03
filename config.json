@@ -7,5 +7,5 @@
   },
   "roles": {"intake": "claude", "builder": "claude", "planner": "claude-readonly", "reviewer": "claude-readonly"},
   "verify": "python -m unittest discover",
-  "limits": {"max_iterations": 3, "max_tasks": 8, "timeout_seconds": 900}
+  "limits": {"max_iterations": 3, "max_tasks": 8, "max_parallel": 3, "timeout_seconds": 900}
 }

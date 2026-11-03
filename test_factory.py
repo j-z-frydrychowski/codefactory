@@ -44,7 +44,8 @@ def fake(builder_code, reviews=(), plan="", shared=False, barrier=None):
         try:
             if barrier:
                 barrier.wait()  # przechodzi tylko, gdy oba zadania działają naraz (inaczej BrokenBarrierError)
-            (Path(workdir) / f"test_{title}.py").write_text(builder_code)
+            code = builder_code(title) if callable(builder_code) else builder_code
+            (Path(workdir) / f"test_{title}.py").write_text(code)
             if shared:  # oba zadania dotykają tego samego pliku => konflikt przy drugim scaleniu
                 (Path(workdir) / "shared.txt").write_text("resolved" if "Konflikt" in prompt else title)
             return True, "ok"
@@ -106,6 +107,60 @@ class FactoryTest(unittest.TestCase):
         plan = '[{"title": "A", "description": "a", "depends_on": []}, {"title": "B", "description": "b", "depends_on": [1]}]'
         self.assertEqual(self.go(FAILING, plan=plan, parallel=2), "failed: limit iteracji")
         self.assertEqual(self.files, [])  # B nigdy nie wystartował
+
+    def roles(self, **extra):
+        return {**CFG, "roles": {**CFG["roles"], **extra}}
+
+    def test_resume_redoes_only_unfinished_tasks(self):
+        cfg = self.roles(planner="x")
+        first = fake(lambda title: PASSING if title == "A" else FAILING, plan=PLAN2)
+        with tempfile.TemporaryDirectory() as d:
+            with mock.patch.object(factory, "run_agent", first):
+                state, run_dir = factory.run(cfg, "zrób x", "auto", Path(d))
+            self.assertEqual(state, "failed: limit iteracji")
+            self.assertEqual(factory.jload(run_dir / "progress.json")["done"], [1])
+            second = fake(PASSING)
+            with mock.patch.object(factory, "run_agent", second):
+                state, _ = factory.resume(cfg, run_dir)
+            work = run_dir / "workspace"
+            self.assertEqual(state, "done")
+            self.assertEqual(sorted(p.name for p in work.glob("test_*.py")), ["test_A.py", "test_B.py"])
+            self.assertEqual(factory.git(work, "log", "--format=%s").split(), ["B", "A", "init"])
+            self.assertEqual(factory.git(work, "worktree", "list").count("\n"), 1)  # zostawiony worktree po porażce sprzątnięty
+        titles = [p.split("wykonania teraz\n")[1].split("\n")[0] for p in second.prompts if "BUILDER" in p]
+        self.assertEqual(titles, ["B"])  # A (gotowe) nie wraca do buildera
+        self.assertFalse(any("INTAKE" in p or "PLANNER" in p for p in second.prompts))  # spec i plan z poprzedniej próby
+
+    def test_resume_asks_again_for_unapproved_gate_without_rerunning_intake(self):
+        with tempfile.TemporaryDirectory() as d:
+            first = fake(PASSING)
+            with mock.patch.object(factory, "run_agent", first), mock.patch("builtins.input", return_value="n"):
+                state, run_dir = factory.run(CFG, "zrób x", "guided", Path(d))
+            self.assertEqual(state, "rejected: spec")
+            second = fake(PASSING)
+            with mock.patch.object(factory, "run_agent", second), mock.patch("builtins.input", return_value="t"):
+                state, _ = factory.resume(CFG, run_dir)
+        self.assertEqual(state, "done")
+        self.assertFalse(any("INTAKE" in p for p in second.prompts))
+
+    def test_resume_of_finished_run_does_nothing(self):
+        with tempfile.TemporaryDirectory() as d:
+            with mock.patch.object(factory, "run_agent", fake(PASSING)):
+                _, run_dir = factory.run(CFG, "zrób x", "auto", Path(d))
+            never = mock.Mock(side_effect=AssertionError("agent nie powinien być wołany"))
+            with mock.patch.object(factory, "run_agent", never):
+                self.assertEqual(factory.resume(CFG, run_dir)[0], "done")
+
+    def test_resume_rejects_non_run_dir(self):
+        with tempfile.TemporaryDirectory() as d, self.assertRaises(ValueError):
+            factory.resume(CFG, Path(d))
+
+    def test_unencodable_console_char_does_not_crash_run(self):
+        import io
+        plan = '[{"title": "A", "description": "a ≈ b"}]'
+        cp1250 = io.TextIOWrapper(io.BytesIO(), encoding="cp1250")  # jak konsola/plik przy przekierowaniu na Windows
+        with mock.patch.object(sys, "stdout", cp1250):
+            self.assertEqual(self.go(PASSING, plan=plan), "done")
 
     def test_bad_plan_fails_run(self):
         self.assertEqual(self.go(PASSING, plan="nie json"), "failed: planner")

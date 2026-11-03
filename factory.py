@@ -1,6 +1,8 @@
 import argparse
 import json
+import shutil
 import subprocess
+import sys
 import threading
 import time
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
@@ -89,6 +91,11 @@ def build_task(cfg, log, spec, task, work, tid, base):
     wt = work.parent / "wt" / tid
     branch = f"task/{tid}"
     with LOCK:
+        # po przerwanym runie zostają worktree i gałąź z poprzedniej próby: zadanie startuje od zera
+        git_try(work, "worktree", "remove", "--force", str(wt))
+        shutil.rmtree(wt, ignore_errors=True)
+        git_try(work, "worktree", "prune")
+        git_try(work, "branch", "-D", branch)
         git(work, "worktree", "add", "-q", "-b", branch, str(wt))
     brief = f"# Specyfikacja\n{spec}\n\n# Zadanie do wykonania teraz\n{task['title']}\n{task['description']}"
     feedback, rebuild = "", True
@@ -133,10 +140,11 @@ def build_task(cfg, log, spec, task, work, tid, base):
     return "failed: limit iteracji"
 
 
-def run_tasks(tasks, run_one, max_parallel):
+def run_tasks(tasks, run_one, max_parallel, done=()):
     """Startuje zadanie, gdy wszystkie jego depends_on są gotowe, maks. max_parallel naraz.
-    Po pierwszym błędzie nie startuje nowych (trwające dokańcza). Zwraca pierwszy błąd albo None."""
-    done, started, running, err = set(), set(), {}, None
+    `done` to zadania już wykonane (wznowienie). Po pierwszym błędzie nie startuje nowych (trwające dokańcza).
+    Zwraca pierwszy błąd albo None."""
+    done, started, running, err = set(done), set(done), {}, None
     with ThreadPoolExecutor(max_parallel) as ex:
         while True:
             for n, t in enumerate(tasks, 1):
@@ -156,9 +164,15 @@ def run_tasks(tasks, run_one, max_parallel):
                     done.add(n)
 
 
+def jload(p):
+    try:
+        return json.loads(p.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+
+
 def run(cfg, task, mode=None, base=None):
-    """Intake -> spec -> (planner -> plan) -> zadania po kolei, każde w worktree. Zwraca (stan, katalog runa)."""
-    mode = mode or cfg["mode"]
+    """Nowy run: katalog + repo, potem execute(). Zwraca (stan, katalog runa)."""
     run_dir = (base or ROOT / "runs") / time.strftime("%Y%m%d-%H%M%S")
     work = run_dir / "workspace"
     work.mkdir(parents=True)
@@ -166,6 +180,31 @@ def run(cfg, task, mode=None, base=None):
     git(work, "commit", "-q", "--allow-empty", "-m", "init")  # worktree wymaga commita
     with open(work / ".git" / "info" / "exclude", "a") as f:
         f.write("__pycache__/\n")
+    return execute(cfg, run_dir, task, mode or cfg["mode"])
+
+
+def resume(cfg, run_dir, mode=None):
+    """Wznawia przerwany lub nieudany run od miejsca, w którym stanął: pomija zatwierdzone etapy i gotowe zadania,
+    zadania nieukończone robi od zera. Nie wznawiaj runu, który jeszcze działa (nie ma na to zabezpieczenia)."""
+    st = jload(run_dir / "status.json")
+    if not st or not (run_dir / "workspace" / ".git").exists():
+        raise ValueError(f"{run_dir} nie wygląda na run fabryki")
+    if st["state"] == "done":
+        return "done", run_dir
+    return execute(cfg, run_dir, st["task"], mode or st["mode"])
+
+
+def execute(cfg, run_dir, task, mode):
+    """Intake -> spec -> (planner -> plan) -> zadania wg zależności, każde w worktree.
+    Postęp (zatwierdzenia, plan, gotowe zadania) w progress.json umożliwia wznowienie."""
+    work = run_dir / "workspace"
+    progress = jload(run_dir / "progress.json") or {}
+    progress_lock = threading.Lock()
+
+    def save(**kw):
+        with progress_lock:
+            progress.update(kw)
+            (run_dir / "progress.json").write_text(json.dumps(progress, ensure_ascii=False), encoding="utf-8")
 
     def set_state(state):
         (run_dir / "status.json").write_text(
@@ -182,57 +221,83 @@ def run(cfg, task, mode=None, base=None):
 
     def log(text):
         with log_lock:
-            print(text)
+            try:
+                print(text)
+            except UnicodeEncodeError:  # konsola/plik w cp1250: znak spoza strony kodowej nie może przerwać runu
+                enc = sys.stdout.encoding or "ascii"
+                print(text.encode(enc, "replace").decode(enc))
             with open(run_dir / "log.md", "a", encoding="utf-8") as f:
                 f.write(text + "\n")
 
-    log(f"[intake] {task}")
-    ok, spec = agent(cfg, "intake", f"# Zadanie\n{task}", work)
-    if not ok:
-        log(spec)
-        return finish("failed: intake")
-    (run_dir / "spec.md").write_text(spec, encoding="utf-8")
-    if not approve("spec", mode, run_dir, how):
-        return finish("rejected: spec")
+    spec_file = run_dir / "spec.md"
+    if spec_file.exists():
+        spec = spec_file.read_text(encoding="utf-8")
+        log("[wznowienie] spec z poprzedniej próby")
+    else:
+        log(f"[intake] {task}")
+        ok, spec = agent(cfg, "intake", f"# Zadanie\n{task}", work)
+        if not ok:
+            log(spec)
+            return finish("failed: intake")
+        spec_file.write_text(spec, encoding="utf-8")
+    if not progress.get("spec_ok"):
+        if not approve("spec", mode, run_dir, how):
+            return finish("rejected: spec")
+        save(spec_ok=True)
 
     tasks = [{"title": "Całość", "description": "Zaimplementuj całą specyfikację.", "depends_on": []}]
     if "planner" in cfg["roles"]:
-        ok, out = agent(cfg, "planner", f"# Specyfikacja\n{spec}", work)
-        try:
-            if not ok:
-                raise ValueError(out)
-            tasks = parse_plan(out, cfg["limits"].get("max_tasks", 8))
-        except ValueError as e:
-            log(f"[plan] {e}")
-            return finish("failed: planner")
-        plan = "\n".join(
-            f"{n}. **{t['title']}**{' (po: ' + ', '.join(map(str, t['depends_on'])) + ')' if t['depends_on'] else ''}: {t['description']}"
-            for n, t in enumerate(tasks, 1))
-        (run_dir / "tasks.md").write_text(plan, encoding="utf-8")
-        log(f"[plan]\n{plan}")
-        if not approve("plan", mode, run_dir, how):
-            return finish("rejected: plan")
+        if "plan" in progress:
+            tasks = progress["plan"]
+        else:
+            ok, out = agent(cfg, "planner", f"# Specyfikacja\n{spec}", work)
+            try:
+                if not ok:
+                    raise ValueError(out)
+                tasks = parse_plan(out, cfg["limits"].get("max_tasks", 8))
+            except ValueError as e:
+                log(f"[plan] {e}")
+                return finish("failed: planner")
+            plan = "\n".join(
+                f"{n}. **{t['title']}**{' (po: ' + ', '.join(map(str, t['depends_on'])) + ')' if t['depends_on'] else ''}: {t['description']}"
+                for n, t in enumerate(tasks, 1))
+            (run_dir / "tasks.md").write_text(plan, encoding="utf-8")
+            log(f"[plan]\n{plan}")
+            save(plan=tasks)
+        if not progress.get("plan_ok"):
+            if not approve("plan", mode, run_dir, how):
+                return finish("rejected: plan")
+            save(plan_ok=True)
 
     base = git(work, "rev-parse", "--abbrev-ref", "HEAD").strip()
 
     def run_one(n, t):
         try:
-            return build_task(cfg, log, spec, t, work, f"t{n}", base)
+            err = build_task(cfg, log, spec, t, work, f"t{n}", base)
         except Exception as e:  # np. błąd gita: run ma się zakończyć stanem, nie zawisnąć na "running"
             log(f"[t{n}] {type(e).__name__}: {e}")
             return "failed: wyjątek"
+        if not err:
+            save(done=sorted({*progress.get("done", []), n}))
+        return err
 
-    return finish(run_tasks(tasks, run_one, cfg["limits"].get("max_parallel", 1)) or "done")
+    return finish(run_tasks(tasks, run_one, cfg["limits"].get("max_parallel", 1), progress.get("done", [])) or "done")
 
 
 if __name__ == "__main__":
     ap = argparse.ArgumentParser(description="CodeFactory")
-    ap.add_argument("task", help="zadanie w języku naturalnym")
+    ap.add_argument("task", nargs="?", help="zadanie w języku naturalnym")
+    ap.add_argument("--resume", metavar="RUN", help="wznów run (id z runs/ albo ścieżka) zamiast zaczynać nowy")
     ap.add_argument("--mode", choices=GATES)
     ap.add_argument("--approval", choices=["terminal", "gui"], help="gdzie zatwierdzać bramki (domyślnie z configu)")
     ap.add_argument("--config", default=str(ROOT / "config.json"))
     a = ap.parse_args()
+    if bool(a.task) == bool(a.resume):
+        ap.error("podaj zadanie albo --resume RUN (jedno z dwóch)")
     cfg = json.loads(Path(a.config).read_text(encoding="utf-8"))
     cfg["approval"] = a.approval or cfg.get("approval", "terminal")
-    state, d = run(cfg, a.task, a.mode)
+    if a.resume:
+        state, d = resume(cfg, Path(a.resume) if Path(a.resume).is_dir() else ROOT / "runs" / a.resume, a.mode)
+    else:
+        state, d = run(cfg, a.task, a.mode)
     print(f"{state} -> {d}")

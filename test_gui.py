@@ -92,6 +92,20 @@ class GuiTest(unittest.TestCase):
         self.assertEqual(argv[-2:], ["--", "--help"])  # zadanie nie może zostać wzięte za flagę
         self.assertIn("gui", argv)
 
+    def test_resume_only_for_failed_or_rejected_runs(self):
+        with mock.patch.object(gui, "resume_run", return_value=None) as resume:
+            for state, code in (("running", 409), ("done", 409), ("failed: limit iteracji", 200), ("rejected: plan", 200)):
+                (self.run_dir / "status.json").write_text(json.dumps({"state": state}))
+                self.assertEqual(self.req(f"/api/run/{RID}/resume", {})[0], code, state)
+            self.assertEqual(resume.call_count, 2)
+            resume.assert_called_with(RID)
+
+    def test_resume_run_launches_factory_with_resume_flag(self):
+        with mock.patch.object(gui.subprocess, "Popen") as popen:
+            popen.return_value.wait.side_effect = gui.subprocess.TimeoutExpired("x", 1)
+            self.assertIsNone(gui.resume_run(RID))
+        self.assertEqual(popen.call_args[0][0][-2:], ["--resume", RID])
+
     def test_factory_approve_waits_for_gui_answer(self):
         def human():
             while not (self.run_dir / "pending.json").exists():

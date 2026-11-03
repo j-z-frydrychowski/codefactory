@@ -168,6 +168,11 @@ async function showRun() {
     g.append(el('div', null, ' '), yes, no);
     next.append(g);
   }
+  if (/^(failed|rejected)/.test(d.status.state)) {
+    const b = el('button', null, 'Wznów run');
+    b.onclick = async () => { b.disabled = true; await fetch(`/api/run/${sel}/resume`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' }); refresh(); };
+    next.append(b);
+  }
   if (d.spec) next.append(section('Specyfikacja', el('pre', null, d.spec), d.pending?.gate === 'spec' || openState['Specyfikacja'] === true));
   if (d.tasks) next.append(section('Plan zadań', el('pre', null, d.tasks), d.pending?.gate === 'plan' || openState['Plan zadań'] === true));
   next.append(section('Log', logView(d.log), openState['Log'] !== false));

@@ -27,16 +27,24 @@ def jread(p):
         return None
 
 
-def start_run(task, mode):
+def spawn(*args):
     """Odpala factory.py jako osobny proces z bramkami przez GUI. Zwraca tekst błędu albo None."""
     (ROOT / "runs").mkdir(exist_ok=True)
     with open(ROOT / "runs" / "_gui.log", "ab") as log:
-        p = subprocess.Popen([sys.executable, str(ROOT / "factory.py"), "--mode", mode, "--approval", "gui", "--", task],
+        p = subprocess.Popen([sys.executable, str(ROOT / "factory.py"), "--approval", "gui", *args],
                              cwd=ROOT, stdin=subprocess.DEVNULL, stdout=log, stderr=log)
     try:
         return f"factory.py zakończył się kodem {p.wait(timeout=1)} (zobacz runs/_gui.log)"
     except subprocess.TimeoutExpired:
         return None  # nadal działa = wystartował
+
+
+def start_run(task, mode):
+    return spawn("--mode", mode, "--", task)
+
+
+def resume_run(rid):
+    return spawn("--resume", rid)
 
 
 def make_server(runs, port=8765):
@@ -88,9 +96,15 @@ def make_server(runs, port=8765):
                     return self.reply(400, {"error": "potrzebne: task (1-5000 znaków) i mode"})
                 err = start_run(task.strip(), mode)
                 return self.reply(500 if err else 200, {"error": err} if err else {"ok": True})
-            d = self.run_dir(parts[2]) if len(parts) == 4 and parts[:2] == ["api", "run"] and parts[3] == "answer" else None
+            d = self.run_dir(parts[2]) if len(parts) == 4 and parts[:2] == ["api", "run"] and parts[3] in ("answer", "resume") else None
             if not d:
                 return self.reply(404, {"error": "nie ma"})
+            if parts[3] == "resume":
+                state = (jread(d / "status.json") or {}).get("state", "")
+                if not state.startswith(("failed", "rejected")):  # "running" może być żywym procesem: nie wznawiamy
+                    return self.reply(409, {"error": "wznowić można tylko run zakończony błędem lub odrzucony"})
+                err = resume_run(d.name)
+                return self.reply(500 if err else 200, {"error": err} if err else {"ok": True})
             pending = jread(d / "pending.json")
             if not pending:
                 return self.reply(409, {"error": "brak oczekującej bramki"})

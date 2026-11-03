@@ -12,6 +12,9 @@ Konfiguracja w `config.json` (silniki, role, komenda weryfikacji, limity).
 
 GUI: `python gui.py` (http://127.0.0.1:8765, tylko localhost) pokazuje runy na żywo. Żeby zatwierdzać
 bramki (spec, plan) przyciskiem zamiast w terminalu, ustaw w `config.json` `"approval": "gui"`.
+Przerwany lub nieudany run wznowisz: `python factory.py --resume <id z runs/>` (albo przyciskiem „Wznów run" w GUI dla runów
+zakończonych błędem). Wznowienie pomija zatwierdzone etapy i gotowe zadania, a nieukończone robi od zera; spec można
+przed wznowieniem poprawić ręcznie w `runs/<id>/spec.md`. Nie wznawiaj runu, który jeszcze działa.
 Runy można też startować z GUI (formularz u góry; wtedy bramki są zawsze w GUI).
 
 ## Cele

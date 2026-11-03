@@ -5,10 +5,13 @@ je specyfikują, planują, budują, weryfikują i recenzują. Człowiek zatwierd
 tylko wybrane punkty (zależnie od trybu).
 
 Status: **zaimplementowane: kroki 1-3 oraz planner i reviewer z kroku 4** (adapter CLI, adapter `api` (nietestowany na prawdziwym modelu), intake, planner, zadania w osobnych git worktree,
-verify, reviewer; tryby `manual`/`guided`/`auto`). Brak: równoległość, merge do repo docelowego, GUI.
+verify, reviewer, GUI; tryby `manual`/`guided`/`auto`). Brak: równoległość, merge do repo docelowego.
 
 Użycie: `python factory.py "zrób skrypt, który liczy słowa w pliku"`; testy: `python -m unittest`.
 Konfiguracja w `config.json` (silniki, role, komenda weryfikacji, limity).
+
+GUI: `python gui.py` (http://127.0.0.1:8765, tylko localhost) pokazuje runy na żywo. Żeby zatwierdzać
+bramki (spec, plan) przyciskiem zamiast w terminalu, ustaw w `config.json` `"approval": "gui"`.
 
 ## Cele
 

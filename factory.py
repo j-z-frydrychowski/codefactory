@@ -17,10 +17,30 @@ def agent(cfg, role, prompt, workdir):
     return run_agent(engine, f"{template}\n\n{prompt}", workdir, cfg["limits"]["timeout_seconds"])
 
 
-def approve(name, mode):
+POLL = 0.5  # sekundy między sprawdzeniami odpowiedzi z GUI
+
+
+def approve(name, mode, run_dir=None, how="terminal"):
+    """Bramka dla człowieka. how="gui": pending.json -> czeka na answer.json zapisany przez gui.py."""
     if name not in GATES[mode]:
         return True
-    return input(f"Zatwierdzić {name}? [t/n] ").strip().lower() == "t"
+    if how != "gui":
+        return input(f"Zatwierdzić {name}? [t/n] ").strip().lower() == "t"
+    pending, answer = run_dir / "pending.json", run_dir / "answer.json"
+    answer.unlink(missing_ok=True)
+    pending.write_text(json.dumps({"gate": name}), encoding="utf-8")
+    print(f"[gate] czekam na decyzję w GUI: {name}")
+    while True:
+        try:
+            a = json.loads(answer.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            a = {}
+        if a.get("gate") == name:
+            break
+        time.sleep(POLL)
+    pending.unlink()
+    answer.unlink()
+    return a.get("approve") is True
 
 
 def verify(cmd, workdir):
@@ -92,10 +112,16 @@ def run(cfg, task, mode=None, base=None):
     with open(work / ".git" / "info" / "exclude", "a") as f:
         f.write("__pycache__/\n")
 
-    def finish(state):
+    def set_state(state):
         (run_dir / "status.json").write_text(
             json.dumps({"state": state, "mode": mode, "task": task}, ensure_ascii=False), encoding="utf-8")
+
+    def finish(state):
+        set_state(state)
         return state, run_dir
+
+    how = cfg.get("approval", "terminal")
+    set_state("running")
 
     def log(text):
         print(text)
@@ -108,7 +134,7 @@ def run(cfg, task, mode=None, base=None):
         log(spec)
         return finish("failed: intake")
     (run_dir / "spec.md").write_text(spec, encoding="utf-8")
-    if not approve("spec", mode):
+    if not approve("spec", mode, run_dir, how):
         return finish("rejected: spec")
 
     tasks = [{"title": "Całość", "description": "Zaimplementuj całą specyfikację."}]
@@ -124,7 +150,7 @@ def run(cfg, task, mode=None, base=None):
         plan = "\n".join(f"{n}. **{t['title']}**: {t['description']}" for n, t in enumerate(tasks, 1))
         (run_dir / "tasks.md").write_text(plan, encoding="utf-8")
         log(f"[plan]\n{plan}")
-        if not approve("plan", mode):
+        if not approve("plan", mode, run_dir, how):
             return finish("rejected: plan")
 
     for n, t in enumerate(tasks, 1):

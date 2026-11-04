@@ -227,6 +227,24 @@ class FactoryTest(unittest.TestCase):
         self.assertEqual(titles, ["B"])  # A (gotowe) nie wraca do buildera
         self.assertFalse(any("INTAKE" in p or "PLANNER" in p for p in second.prompts))  # spec i plan z poprzedniej próby
 
+    def test_resume_after_kill_between_merge_and_done_does_not_rebuild_merged_task(self):
+        cfg = self.roles(planner="x")
+        first = fake(lambda title: PASSING if title == "A" else FAILING, plan=PLAN2)
+        with tempfile.TemporaryDirectory() as d:
+            with mock.patch.object(factory, "run_agent", first):
+                _, run_dir = factory.run(cfg, "zrób x", "auto", Path(d))
+            work = run_dir / "workspace"
+            prog = factory.jload(run_dir / "progress.json")
+            prog["done"] = []  # zabity po ff-merge A, przed zapisem "gotowe"
+            (run_dir / "progress.json").write_text(json.dumps(prog), encoding="utf-8")
+            second = fake(PASSING)
+            with mock.patch.object(factory, "run_agent", second):
+                state, _ = factory.resume(cfg, run_dir)
+            self.assertEqual(state, "done")
+            self.assertEqual(factory.git(work, "log", "--format=%s").split(), ["B", "A", "init"])  # bez zdublowanego A
+        titles = [p.split("wykonania teraz\n")[1].split("\n")[0] for p in second.prompts if "BUILDER" in p]
+        self.assertEqual(titles, ["B"])  # A zmergowane: nie wraca do buildera; B niezmergowane: od zera
+
     def test_resume_asks_again_for_unapproved_gate_without_rerunning_intake(self):
         with tempfile.TemporaryDirectory() as d:
             first = fake(PASSING)

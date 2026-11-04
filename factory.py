@@ -123,18 +123,30 @@ def parse_plan(text, max_tasks):
     return tasks
 
 
-def build_task(cfg, log, spec, task, work, tid, base):
+def cleanup_task(work, wt, branch):
+    """Best-effort: worktree + gałąź zadania (na Windowsie proces po przerwanym runie potrafi trzymać katalog)."""
+    git_try(work, "worktree", "remove", "--force", str(wt))
+    shutil.rmtree(wt, ignore_errors=True)
+    git_try(work, "worktree", "prune")
+    git_try(work, "branch", "-q", "-D", branch)
+
+
+def build_task(cfg, log, spec, task, work, tid, base, on_merged=None):
     """Jedno zadanie w osobnym worktree. Po zielonym verify+review ff-merge do gałęzi base.
     Gdy base poszła do przodu (równoległe zadanie), dociąga ją do worktree i weryfikuje całość od nowa;
-    konflikt wraca do buildera. Zwraca None przy sukcesie albo tekst stanu błędu (worktree zostaje do oględzin)."""
+    konflikt wraca do buildera. `on_merged` wołane pod LOCK-iem tuż po merge (zapis "gotowe"). Zwraca None przy sukcesie albo tekst stanu błędu (worktree zostaje do oględzin)."""
     wt = work.parent / "wt" / tid
     branch = f"task/{tid}"
     with LOCK:
+        # proces zabity po ff-merge, a przed zapisem "gotowe": commit zadania jest już w base, nie budujemy drugi raz
+        # shortcut: rozpoznanie po temacie commita == tytuł zadania, więc dwa zadania o tym samym tytule się zlałyby;
+        # upgrade: trailer z id zadania w commicie
+        if task["title"].strip() in git(work, "log", "--format=%s", base).splitlines():
+            log(f"[{tid}] już zmergowane do {base}, pomijam budowę")
+            cleanup_task(work, wt, branch)
+            return None
         # po przerwanym runie zostają worktree i gałąź z poprzedniej próby: zadanie startuje od zera
-        git_try(work, "worktree", "remove", "--force", str(wt))
-        shutil.rmtree(wt, ignore_errors=True)
-        git_try(work, "worktree", "prune")
-        git_try(work, "branch", "-D", branch)
+        cleanup_task(work, wt, branch)
         git(work, "worktree", "add", "-q", "-b", branch, str(wt))
     brief = f"# Specyfikacja\n{spec}\n\n# Zadanie do wykonania teraz\n{task['title']}\n{task['description']}"
     feedback, rebuild = "", True
@@ -164,12 +176,10 @@ def build_task(cfg, log, spec, task, work, tid, base):
         git(wt, "commit", "-q", "--allow-empty", "-m", task["title"])
         with LOCK:
             if git_try(work, "merge", "-q", "--ff-only", branch)[0] == 0:
-                # zadanie jest już scalone: sprzątanie jest best-effort (na Windowsie pozostały po przerwanym runie proces
-                # potrafi trzymać katalog), a jego porażka nie może unieważnić wyniku
-                git_try(work, "worktree", "remove", "--force", str(wt))
-                shutil.rmtree(wt, ignore_errors=True)
-                git_try(work, "worktree", "prune")
-                git_try(work, "branch", "-q", "-D", branch)
+                # zadanie jest już scalone: zapis "gotowe" przed sprzątaniem, a sprzątanie best-effort nie unieważnia wyniku
+                if on_merged:
+                    on_merged()
+                cleanup_task(work, wt, branch)
                 return None
         if git_try(wt, "merge", "--no-edit", base)[0] == 0:
             rebuild, feedback = False, ""
@@ -389,7 +399,8 @@ def _execute(cfg, run_dir, task, mode):
 
     def run_one(n, t):
         try:
-            err = build_task(cfg, log, spec, t, work, f"t{n}", base)
+            err = build_task(cfg, log, spec, t, work, f"t{n}", base,
+                             lambda: save(done=sorted({*progress.get("done", []), n})))
         except Exception as e:  # np. błąd gita: run ma się zakończyć stanem, nie zawisnąć na "running"
             log(f"[t{n}] {type(e).__name__}: {e}")
             return "failed: wyjątek"

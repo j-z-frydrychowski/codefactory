@@ -21,8 +21,10 @@ używa tej samej.
 GUI: `python gui.py` (http://127.0.0.1:8765, tylko localhost) pokazuje runy na żywo. Żeby zatwierdzać
 bramki (spec, plan) przyciskiem zamiast w terminalu, ustaw w `config.json` `"approval": "gui"`.
 Przerwany lub nieudany run wznowisz: `python factory.py --resume <id z runs/>` (albo przyciskiem „Wznów run" w GUI dla runów
-zakończonych błędem). Wznowienie pomija zatwierdzone etapy i gotowe zadania, a nieukończone robi od zera; spec można
-przed wznowieniem poprawić ręcznie w `runs/<id>/spec.md`. Nie wznawiaj runu, który jeszcze działa.
+zakończonych błędem lub przerwanych). Wznowienie pomija zatwierdzone etapy i gotowe zadania, a nieukończone robi od zera; spec można
+przed wznowieniem poprawić ręcznie w `runs/<id>/spec.md`. Działający run trzyma w `runs/<id>/pid` PID procesu fabryki; `--resume` odmawia (kod wyjścia != 0), gdy ten proces żyje.
+Run zabity w trakcie (status `running`/`needs human` + martwy PID) GUI pokazuje jako „PRZERWANY" i pozwala wznowić; stary run
+bez pliku `pid` zostaje „w toku" i GUI go nie wznowi (brak pewności). Ograniczenie: ponowne użycie PID przez obcy proces.
 Runy można też startować z GUI (formularz u góry; wtedy bramki są zawsze w GUI).
 
 Merge: z `--target <ścieżka repo git>` (albo `target` w `config.json`; argument ma pierwszeństwo) po stanie `done` fabryka

@@ -1,5 +1,6 @@
 import argparse
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -225,12 +226,50 @@ def run(cfg, task, mode=None, base=None):
     return execute(cfg, run_dir, task, mode or cfg["mode"])
 
 
+def pid_alive(pid):
+    """Czy proces o tym PID żyje. Windows: ctypes/kernel32, bo os.kill(pid, 0) tam NIE jest testem (kończy proces);
+    gdzie indziej os.kill(pid, 0). Bez nowych zależności.
+    shortcut: PID może zostać ponownie użyty przez obcy proces (wtedy martwy run wygląda na żywy, a wznowienie
+    odmawia); upgrade: zapisywać też czas startu procesu i go porównywać."""
+    if os.name == "nt":
+        import ctypes
+        k = ctypes.WinDLL("kernel32", use_last_error=True)
+        k.OpenProcess.restype = ctypes.c_void_p
+        k.GetExitCodeProcess.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
+        k.CloseHandle.argtypes = [ctypes.c_void_p]
+        h = k.OpenProcess(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
+        if not h:
+            return ctypes.get_last_error() == 5  # odmowa dostępu = proces istnieje, tylko cudzy
+        code = ctypes.c_ulong()
+        ok = k.GetExitCodeProcess(h, ctypes.byref(code))
+        k.CloseHandle(h)
+        return bool(ok) and code.value == 259  # STILL_ACTIVE
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def run_process_alive(run_dir):
+    """True/False wg pliku `pid` w katalogu runu; None, gdy go nie ma (stary run albo run, który zakończył się czysto).
+    Brak pliku to brak pewności, więc wołający traktuje to jak "nie wiem" i niczego nie wznawia."""
+    try:
+        return pid_alive(int((run_dir / "pid").read_text(encoding="utf-8")))
+    except (OSError, ValueError):
+        return None
+
+
 def resume(cfg, run_dir, mode=None):
     """Wznawia przerwany lub nieudany run od miejsca, w którym stanął: pomija zatwierdzone etapy i gotowe zadania,
-    zadania nieukończone robi od zera. Nie wznawiaj runu, który jeszcze działa (nie ma na to zabezpieczenia)."""
+    zadania nieukończone robi od zera. Odmawia (RuntimeError), gdy proces runu jeszcze żyje (plik `pid`)."""
     st = jload(run_dir / "status.json")
     if not st or not (run_dir / "workspace" / ".git").exists():
         raise ValueError(f"{run_dir} nie wygląda na run fabryki")
+    if run_process_alive(run_dir):
+        raise RuntimeError(f"run {run_dir.name} jeszcze działa (proces z pliku pid żyje); nie wznawiam, nic nie zmieniono")
     prog = jload(run_dir / "progress.json") or {}
     if st["state"] == "done" and (prog.get("merged") or not (cfg.get("target") or prog.get("target"))):
         return "done", run_dir
@@ -238,6 +277,16 @@ def resume(cfg, run_dir, mode=None):
 
 
 def execute(cfg, run_dir, task, mode):
+    """Zapisuje PID tego procesu w runs/<id>/pid na czas pracy (usuwa na końcu), żeby resume i GUI wiedziały, że run żyje."""
+    pid = run_dir / "pid"
+    pid.write_text(str(os.getpid()), encoding="utf-8")
+    try:
+        return _execute(cfg, run_dir, task, mode)
+    finally:
+        pid.unlink(missing_ok=True)
+
+
+def _execute(cfg, run_dir, task, mode):
     """Intake -> spec -> (planner -> plan) -> zadania wg zależności, każde w worktree.
     Postęp (zatwierdzenia, plan, gotowe zadania) w progress.json umożliwia wznowienie."""
     work = run_dir / "workspace"
@@ -385,7 +434,10 @@ if __name__ == "__main__":
     if a.verify:
         cfg["verify"] = cfg.get("verify_presets", {}).get(a.verify, a.verify).replace("{root}", ROOT.as_posix())
     if a.resume:
-        state, d = resume(cfg, Path(a.resume) if Path(a.resume).is_dir() else ROOT / "runs" / a.resume, a.mode)
+        try:
+            state, d = resume(cfg, Path(a.resume) if Path(a.resume).is_dir() else ROOT / "runs" / a.resume, a.mode)
+        except RuntimeError as e:
+            sys.exit(f"odmowa: {e}")
     else:
         state, d = run(cfg, a.task, a.mode)
     print(f"{state} -> {d}")

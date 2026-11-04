@@ -1,4 +1,5 @@
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -245,6 +246,57 @@ class FactoryTest(unittest.TestCase):
             never = mock.Mock(side_effect=AssertionError("agent nie powinien być wołany"))
             with mock.patch.object(factory, "run_agent", never):
                 self.assertEqual(factory.resume(CFG, run_dir)[0], "done")
+
+    def finished_run(self, d):
+        with mock.patch.object(factory, "run_agent", fake(PASSING)):
+            return factory.run(CFG, "zrób x", "auto", Path(d))[1]
+
+    def test_run_writes_pid_only_while_running(self):
+        seen = []
+        inner = fake(PASSING)
+
+        def spy(*a, **k):
+            seen.append(next(Path(d).glob("*/pid")).read_text())
+            return inner(*a, **k)
+        with tempfile.TemporaryDirectory() as d:
+            with mock.patch.object(factory, "run_agent", spy):
+                _, run_dir = factory.run(CFG, "zrób x", "auto", Path(d))
+            self.assertFalse((run_dir / "pid").exists())
+        self.assertEqual(set(seen), {str(os.getpid())})
+
+    def test_resume_refuses_when_process_alive(self):
+        with tempfile.TemporaryDirectory() as d:
+            run_dir = self.finished_run(d)
+            (run_dir / "status.json").write_text(json.dumps({"state": "running", "mode": "auto", "task": "x"}))
+            (run_dir / "pid").write_text(str(os.getpid()))
+            before = (run_dir / "status.json").read_text()
+            never = mock.Mock(side_effect=AssertionError("agent nie powinien być wołany"))
+            with mock.patch.object(factory, "run_agent", never), self.assertRaisesRegex(RuntimeError, "jeszcze działa"):
+                factory.resume(CFG, run_dir)
+            self.assertEqual((run_dir / "status.json").read_text(), before)
+            self.assertTrue((run_dir / "pid").exists())
+
+    def test_resume_works_when_pid_is_dead(self):
+        with tempfile.TemporaryDirectory() as d:
+            run_dir = self.finished_run(d)
+            (run_dir / "status.json").write_text(json.dumps({"state": "running", "mode": "auto", "task": "x"}))
+            dead = subprocess.Popen([sys.executable, "-c", "pass"])
+            dead.wait()
+            (run_dir / "pid").write_text(str(dead.pid))
+            (run_dir / "progress.json").unlink()  # jak run zabity przed ukończeniem zadań
+            (run_dir / "spec.md").unlink()
+            with mock.patch.object(factory, "run_agent", fake(PASSING)):
+                self.assertEqual(factory.resume(CFG, run_dir)[0], "done")
+            self.assertFalse((run_dir / "pid").exists())
+
+    def test_cli_resume_of_live_run_exits_nonzero(self):
+        with tempfile.TemporaryDirectory() as d:
+            run_dir = self.finished_run(d)
+            (run_dir / "pid").write_text(str(os.getpid()))
+            p = subprocess.run([sys.executable, str(factory.ROOT / "factory.py"), "--resume", str(run_dir)],
+                               capture_output=True, text=True, encoding="utf-8")
+            self.assertNotEqual(p.returncode, 0)
+            self.assertIn("jeszcze działa", p.stderr)
 
     def test_resume_rejects_non_run_dir(self):
         with tempfile.TemporaryDirectory() as d, self.assertRaises(ValueError):

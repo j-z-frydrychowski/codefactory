@@ -7,7 +7,7 @@ import sys
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-from factory import GATES
+from factory import GATES, run_process_alive
 
 ROOT = Path(__file__).parent
 RUN_ID = re.compile(r"\d{8}-\d{6}")
@@ -25,6 +25,16 @@ def jread(p):
         return json.loads(text(p))
     except ValueError:  # plik w trakcie zapisu albo brak
         return None
+
+
+def status(d):
+    """status.json z wykryciem "przerwany": run "running"/"needs human", a proces z pliku pid nie żyje.
+    Run bez pliku pid (stary albo świeżo startujący) zostaje "running": bez pewności nie sugerujemy wznowienia."""
+    st = jread(d / "status.json") or {"state": "running"}
+    if st["state"] == "running" or st["state"].startswith("needs human"):
+        if run_process_alive(d) is False:
+            return {**st, "state": "przerwany"}
+    return st
 
 
 def spawn(*args):
@@ -74,12 +84,13 @@ def make_server(runs, port=8765):
                 return self.reply(200, presets())
             if parts == ["api", "runs"]:
                 ids = sorted((d.name for d in runs.glob("*") if RUN_ID.fullmatch(d.name)), reverse=True)
-                return self.reply(200, [{"id": i, "status": jread(runs / i / "status.json") or {"state": "running"}}
+                return self.reply(200, [{"id": i, "status": status(runs / i)}
                                         for i in ids])
             d = self.run_dir(parts[2]) if len(parts) == 3 and parts[:2] == ["api", "run"] else None
             if not d:
                 return self.reply(404, {"error": "nie ma"})
-            self.reply(200, {"status": jread(d / "status.json") or {"state": "running"}, "pending": jread(d / "pending.json"),
+            st = status(d)
+            self.reply(200, {"status": st, "pending": None if st["state"] == "przerwany" else jread(d / "pending.json"),
                              "spec": text(d / "spec.md"), "tasks": text(d / "tasks.md"), "log": text(d / "log.md")})
 
         def origin_ok(self):  # blokuje POST ze stron otwartych w innych zakładkach
@@ -108,9 +119,8 @@ def make_server(runs, port=8765):
             if not d:
                 return self.reply(404, {"error": "nie ma"})
             if parts[3] == "resume":
-                state = (jread(d / "status.json") or {}).get("state", "")
-                if not state.startswith(("failed", "rejected")):  # "running" może być żywym procesem: nie wznawiamy
-                    return self.reply(409, {"error": "wznowić można tylko run zakończony błędem lub odrzucony"})
+                if not status(d)["state"].startswith(("failed", "rejected", "przerwany")):  # "running" = żywy proces albo brak pewności: nie wznawiamy
+                    return self.reply(409, {"error": "wznowić można tylko run zakończony błędem, odrzucony lub przerwany (bez żywego procesu)"})
                 err = resume_run(d.name)
                 return self.reply(500 if err else 200, {"error": err} if err else {"ok": True})
             pending = jread(d / "pending.json")

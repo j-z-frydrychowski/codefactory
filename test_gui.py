@@ -1,4 +1,5 @@
 import json
+import os
 import tempfile
 import threading
 import time
@@ -120,6 +121,32 @@ class GuiTest(unittest.TestCase):
                 self.assertEqual(self.req(f"/api/run/{RID}/resume", {})[0], code, state)
             self.assertEqual(resume.call_count, 2)
             resume.assert_called_with(RID)
+
+    def test_dead_pid_reports_interrupted_and_resumable_live_pid_stays_running(self):
+        dead = gui.subprocess.Popen([gui.sys.executable, "-c", "pass"])
+        dead.wait()
+        for state in ("running", "needs human: spec"):
+            (self.run_dir / "status.json").write_text(json.dumps({"state": state}))
+            (self.run_dir / "pending.json").write_text(json.dumps({"gate": "spec"}))
+            (self.run_dir / "pid").write_text(str(dead.pid))
+            d = json.loads(self.req(f"/api/run/{RID}")[1])
+            self.assertEqual((d["status"]["state"], d["pending"]), ("przerwany", None))
+            self.assertEqual(json.loads(self.req("/api/runs")[1])[0]["status"]["state"], "przerwany")
+            (self.run_dir / "pid").write_text(str(os.getpid()))
+            self.assertEqual(json.loads(self.req(f"/api/run/{RID}")[1])["status"]["state"], state)
+        (self.run_dir / "pid").unlink()  # stary run bez pid: bez pewności zostaje jak był
+        self.assertEqual(json.loads(self.req(f"/api/run/{RID}")[1])["status"]["state"], "needs human: spec")
+
+    def test_resume_allowed_for_interrupted_but_409_for_live_process(self):
+        (self.run_dir / "status.json").write_text(json.dumps({"state": "running"}))
+        dead = gui.subprocess.Popen([gui.sys.executable, "-c", "pass"])
+        dead.wait()
+        with mock.patch.object(gui, "resume_run", return_value=None) as resume:
+            (self.run_dir / "pid").write_text(str(os.getpid()))
+            self.assertEqual(self.req(f"/api/run/{RID}/resume", {})[0], 409)
+            (self.run_dir / "pid").write_text(str(dead.pid))
+            self.assertEqual(self.req(f"/api/run/{RID}/resume", {})[0], 200)
+            resume.assert_called_once_with(RID)
 
     def test_resume_run_launches_factory_with_resume_flag(self):
         with mock.patch.object(gui.subprocess, "Popen") as popen:

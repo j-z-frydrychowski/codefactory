@@ -71,6 +71,7 @@ const el = (tag, cls, txt) => { const e = document.createElement(tag); if (cls) 
 function kind(state) {
   if (state === 'running') return ['running', 'W TOKU'];
   if (state === 'done') return ['done', 'GOTOWE'];
+  if (state === 'przerwany') return ['wait', 'PRZERWANY'];
   if (state.startsWith('rejected')) return ['rejected', state.toUpperCase()];
   return ['failed', state.toUpperCase()];
 }
@@ -170,7 +171,7 @@ async function showRun() {
     g.append(el('div', null, ' '), yes, no);
     next.append(g);
   }
-  if (/^(failed|rejected)/.test(d.status.state)) {
+  if (/^(failed|rejected|przerwany)/.test(d.status.state)) {
     const b = el('button', null, 'Wznów run');
     b.onclick = async () => { b.disabled = true; await fetch(`/api/run/${sel}/resume`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' }); refresh(); };
     next.append(b);

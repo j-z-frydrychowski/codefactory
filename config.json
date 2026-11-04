@@ -12,6 +12,7 @@
   },
   "roles": {
     "intake": "claude",
+    "spec_check": "claude-readonly",
     "builder": "claude",
     "planner": "claude-readonly",
     "reviewer": "claude-readonly"

@@ -65,7 +65,8 @@ Trybu bez żadnych bramek (YOLO) świadomie nie ma. Merge zawsze zatwierdza czł
 
 ## Silniki
 
-Każda rola (intake, planner, builder, reviewer) ma w konfiguracji przypisany silnik.
+Każda rola (intake, spec_check, planner, builder, reviewer) ma
+(`spec_check` jest opcjonalna: czyta zadanie i spec, a przy `VERDICT: FAIL` intake dostaje listę sprzeczności i poprawia spec raz, przed bramką) w konfiguracji przypisany silnik.
 
 | Typ   | Przykłady                                      | Pętlę "czytaj/edytuj/uruchom" robi |
 |-------|------------------------------------------------|------------------------------------|
@@ -91,7 +92,7 @@ roles:
 ## Struktura (planowana)
 
 ```
-agents/        intake.md, planner.md, builder.md, reviewer.md  (prompty ról)
+agents/        intake.md, spec_check.md, planner.md, builder.md, reviewer.md  (prompty ról)
 runs/<id>/     spec.md, tasks.md, log.md, status.json          (stan runa)
 factory.py     pętla: wybierz zadanie -> odpal agenta -> sprawdź -> dalej
 config.yaml    silniki, role, tryb, limity

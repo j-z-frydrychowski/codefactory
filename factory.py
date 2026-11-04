@@ -256,6 +256,19 @@ def execute(cfg, run_dir, task, mode):
         if not ok:
             log(spec)
             return finish("failed: intake")
+        if "spec_check" in cfg["roles"]:  # jedna poprawka: kontroler szuka sprzeczności, intake poprawia
+            ok, check = agent(cfg, "spec_check", f"# Zadanie\n{task}\n\n# Specyfikacja\n{spec}", work)
+            if not ok:
+                log(check)
+                return finish("failed: spec_check")
+            passed = check.lstrip().upper().startswith("VERDICT: PASS")
+            log(f"[spec_check] {'PASS' if passed else 'FAIL'}\n{check}")
+            if not passed:
+                ok, spec = agent(cfg, "intake", f"# Zadanie\n{task}\n\n# Poprzednia specyfikacja\n{spec}\n\n"
+                                 f"# Problemy do usunięcia\n{check}", work)
+                if not ok:
+                    log(spec)
+                    return finish("failed: intake")
         spec_file.write_text(spec, encoding="utf-8")
     if not progress.get("spec_ok"):
         if not approve("spec", mode, run_dir, how):

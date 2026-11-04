@@ -26,16 +26,18 @@ FAILING = PASSING.replace("True)", "False)")
 PLAN2 = '```json\n[{"title": "A", "description": "pierwsze"}, {"title": "B", "description": "drugie"}]\n```'
 
 
-def fake(builder_code, reviews=(), plan="", shared=False, barrier=None):
-    reviews = iter(reviews)
+def fake(builder_code, reviews=(), plan="", shared=False, barrier=None, checks=()):
+    reviews, checks = iter(reviews), iter(checks)
     prompts = []
     state = {"active": 0, "max_active": 0}
     lock = threading.Lock()
 
     def run_agent(engine, prompt, workdir, timeout):
         prompts.append(prompt)
+        if "KONTROLEREM" in prompt:
+            return True, next(checks)
         if "INTAKE" in prompt:
-            return True, "## Cel\nx"
+            return True, "## Cel\npoprawiony" if "Problemy do usunięcia" in prompt else "## Cel\nx"
         if "PLANNER" in prompt:
             return True, plan
         if "REVIEWER" in prompt:
@@ -66,12 +68,15 @@ class FactoryTest(unittest.TestCase):
             cfg = {**cfg, "roles": {**cfg["roles"], "reviewer": "x"}}
         if plan is not None:
             cfg = {**cfg, "roles": {**cfg["roles"], "planner": "x"}}
+        if fake_kw.get("checks"):
+            cfg = {**cfg, "roles": {**cfg["roles"], "spec_check": "x"}}
         self.agent = fake(builder_code, reviews or (), plan or "", **fake_kw)
         with tempfile.TemporaryDirectory() as d, mock.patch.object(factory, "run_agent", self.agent):
             state, run_dir = factory.run(cfg, "zrób x", mode, Path(d))
             self.files = sorted(p.name for p in (run_dir / "workspace").glob("test_*.py"))
             self.log = factory.git(run_dir / "workspace", "log", "--format=%s")
             self.worktrees = factory.git(run_dir / "workspace", "worktree", "list").count("\n")
+            self.spec = (run_dir / "spec.md").read_text(encoding="utf-8")
             shared = run_dir / "workspace" / "shared.txt"
             self.shared = shared.read_text() if shared.exists() else None
             return state
@@ -81,6 +86,15 @@ class FactoryTest(unittest.TestCase):
         self.assertEqual(len(self.files), 2)  # oba zadania wylądowały w głównym workspace
         self.assertEqual(self.log.split(), ["B", "A", "init"])
         self.assertEqual(self.worktrees, 1)  # worktree sprzątnięte po merge
+
+    def test_spec_check_fail_sends_issues_back_to_intake_once(self):
+        self.assertEqual(self.go(PASSING, checks=["VERDICT: FAIL\n- kryteria 2 i 3 się wykluczają"]), "done")
+        self.assertIn("poprawiony", self.spec)
+        self.assertTrue(any("INTAKE" in p and "się wykluczają" in p for p in self.agent.prompts))  # intake dostał uwagi kontrolera
+
+    def test_spec_check_pass_keeps_original_spec(self):
+        self.assertEqual(self.go(PASSING, checks=["VERDICT: PASS"]), "done")
+        self.assertNotIn("poprawiony", self.spec)
 
     def test_failed_task_stops_run_and_is_not_merged(self):
         self.assertEqual(self.go(FAILING, plan=PLAN2), "failed: limit iteracji")

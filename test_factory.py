@@ -87,8 +87,16 @@ class FactoryTest(unittest.TestCase):
         self.assertEqual(self.log.split(), ["B", "A", "init"])
         self.assertEqual(self.worktrees, 1)  # worktree sprzątnięte po merge
 
+    def test_spec_check_fail_forces_human_gate_even_in_auto_and_stop_rejects(self):
+        with mock.patch("builtins.input", return_value="n") as ask:
+            self.assertEqual(self.go(PASSING, checks=["VERDICT: FAIL\n- sprzeczność"]), "rejected: spec")
+        ask.assert_called_once()
+        self.assertEqual(self.files, [])  # nic nie zbudowano
+
     def test_spec_check_fail_sends_issues_back_to_intake_once(self):
-        self.assertEqual(self.go(PASSING, checks=["VERDICT: FAIL\n- kryteria 2 i 3 się wykluczają"]), "done")
+        with mock.patch("builtins.input", return_value="t"):
+            state = self.go(PASSING, checks=["VERDICT: FAIL\n- kryteria 2 i 3 się wykluczają"])
+        self.assertEqual(state, "done")
         self.assertIn("poprawiony", self.spec)
         self.assertTrue(any("INTAKE" in p and "się wykluczają" in p for p in self.agent.prompts))  # intake dostał uwagi kontrolera
 

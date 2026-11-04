@@ -66,7 +66,7 @@ Trybu bez żadnych bramek (YOLO) świadomie nie ma. Merge zawsze zatwierdza czł
 ## Silniki
 
 Każda rola (intake, spec_check, planner, builder, reviewer) ma
-(`spec_check` jest opcjonalna: czyta zadanie i spec, a przy `VERDICT: FAIL` intake dostaje listę sprzeczności i poprawia spec raz, przed bramką) w konfiguracji przypisany silnik.
+(`spec_check` jest opcjonalna: czyta zadanie i spec, a przy `VERDICT: FAIL` intake dostaje listę sprzeczności i poprawia spec raz; po FAIL bramka `spec` obowiązuje nawet w trybie `auto`: status `needs human: spec`, odrzucenie = stop `rejected: spec`) w konfiguracji przypisany silnik.
 
 | Typ   | Przykłady                                      | Pętlę "czytaj/edytuj/uruchom" robi |
 |-------|------------------------------------------------|------------------------------------|

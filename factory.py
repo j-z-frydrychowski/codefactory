@@ -269,10 +269,16 @@ def execute(cfg, run_dir, task, mode):
                 if not ok:
                     log(spec)
                     return finish("failed: intake")
+                save(spec_flag=True)  # kontroler znalazł problem: bramka spec obowiązuje też w trybie auto
         spec_file.write_text(spec, encoding="utf-8")
     if not progress.get("spec_ok"):
-        if not approve("spec", mode, run_dir, how):
+        flagged = progress.get("spec_flag", False)
+        if flagged:
+            log("[spec_check] kontroler zgłosił problem, wymagana decyzja człowieka (nawet w trybie auto)")
+            set_state("needs human: spec")
+        if not approve("spec", "guided" if flagged else mode, run_dir, how):
             return finish("rejected: spec")
+        set_state("running")
         save(spec_ok=True)
 
     tasks = [{"title": "Całość", "description": "Zaimplementuj całą specyfikację.", "depends_on": []}]

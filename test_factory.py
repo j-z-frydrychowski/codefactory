@@ -7,6 +7,7 @@ import tempfile
 import threading
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest import mock
 
 import engines
@@ -132,6 +133,75 @@ class FactoryTest(unittest.TestCase):
         plan = '[{"title": "A", "description": "a", "depends_on": []}, {"title": "B", "description": "b", "depends_on": [1]}]'
         self.assertEqual(self.go(FAILING, plan=plan, parallel=2), "failed: limit iteracji")
         self.assertEqual(self.files, [])  # B nigdy nie wystartował
+
+    def merge_run(self, answer="t", prepare=None, mode="auto"):
+        """Run z targetem (tymczasowe repo z jednym commitem); zwraca (stan, target, run_dir, input) przed sprzątaniem w callbacku."""
+        with tempfile.TemporaryDirectory() as d:
+            target = Path(d) / "target"
+            target.mkdir()
+            factory.git(target, "init", "-q")
+            (target / "a.txt").write_text("a")
+            factory.git(target, "add", "-A")
+            factory.git(target, "commit", "-q", "-m", "start")
+            if prepare:
+                prepare(target)
+            with mock.patch.object(factory, "run_agent", fake(PASSING)), mock.patch("builtins.input", return_value=answer) as ask:
+                state, run_dir = factory.run({**CFG, "target": str(target)}, "zrób x", mode, Path(d) / "runs")
+            return SimpleNamespace(state=state, ask=ask, run_dir=run_dir, target=target,
+                                   log=factory.git(target, "log", "--format=%s"), files=sorted(p.name for p in target.glob("*")), runlog=(run_dir / "log.md").read_text(encoding="utf-8"),
+                                   branches=factory.git(target, "branch", "--list", "factory/*").split(),
+                                   progress=factory.jload(run_dir / "progress.json"), status=factory.git(target, "status", "--porcelain"))
+
+    def test_merge_gate_is_forced_in_auto_and_merges_with_no_ff(self):
+        r = self.merge_run()
+        self.assertEqual(r.state, "done")
+        r.ask.assert_called_once()  # auto nie ma innych bramek, a merge pytał
+        self.assertIn("test_Całość.py", r.files)
+        self.assertEqual(r.log.splitlines()[0], f"Merge run fabryki {r.run_dir.name}")
+        self.assertTrue(r.progress["merged"])
+        self.assertEqual(r.status, "")
+
+    def test_merge_rejected_leaves_target_untouched(self):
+        r = self.merge_run("n")
+        self.assertEqual(r.state, "rejected: merge")
+        self.assertEqual((r.files, r.log.strip(), r.branches), ([".git", "a.txt"], "start", []))
+        self.assertNotIn("merged", r.progress)
+
+    def test_merge_refused_on_dirty_target(self):
+        r = self.merge_run(prepare=lambda t: (t / "a.txt").write_text("zmiana"))
+        self.assertEqual(r.state, "failed: merge")
+        self.assertEqual((r.log.strip(), r.branches), ("start", []))  # nic nie wniesiono, nie ma nawet gałęzi
+        self.assertIn("nie jest czyste", r.runlog)
+
+    def test_merge_conflict_is_aborted_and_branch_kept(self):
+        def prepare(t):
+            (t / "test_Całość.py").write_text("# inna treść")
+            factory.git(t, "add", "-A")
+            factory.git(t, "commit", "-q", "-m", "kolizja")
+        r = self.merge_run(prepare=prepare)
+        self.assertEqual(r.state, "failed: merge")
+        self.assertEqual(r.status, "")  # merge przerwany, drzewo czyste
+        self.assertEqual(r.log.split(), ["kolizja", "start"])
+        self.assertEqual(r.branches, [f"factory/{r.run_dir.name}"])
+
+    def test_resume_of_done_run_with_target_asks_for_merge_only(self):
+        cfg_run = {**CFG}  # run bez targetu kończy się done, ale resume z targetem dopyta o merge
+        with tempfile.TemporaryDirectory() as d:
+            target = Path(d) / "t"
+            target.mkdir()
+            factory.git(target, "init", "-q")
+            factory.git(target, "commit", "-q", "--allow-empty", "-m", "start")
+            with mock.patch.object(factory, "run_agent", fake(PASSING)), mock.patch("builtins.input", return_value="n"):
+                factory.run({**cfg_run, "target": str(target)}, "zrób x", "auto", Path(d) / "runs")
+                run_dir = next((Path(d) / "runs").iterdir())
+            never = mock.Mock(side_effect=AssertionError("agent nie powinien być wołany"))
+            with mock.patch.object(factory, "run_agent", never), mock.patch("builtins.input", return_value="t") as ask:
+                state, _ = factory.resume({**cfg_run, "target": str(target)}, run_dir)
+                self.assertEqual(state, "done")
+                ask.assert_called_once()
+                self.assertTrue(factory.jload(run_dir / "progress.json")["merged"])
+                self.assertEqual(factory.resume(cfg_run, run_dir)[0], "done")  # już wniesiony: bez pytania
+                ask.assert_called_once()
 
     def roles(self, **extra):
         return {**CFG, "roles": {**CFG["roles"], **extra}}

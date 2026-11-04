@@ -56,6 +56,12 @@ class GuiTest(unittest.TestCase):
         self.assertEqual(code, 200)
         self.assertIn(b"CodeFactory", body)
 
+    def test_merge_gate_info_is_served_and_answerable(self):
+        (self.run_dir / "pending.json").write_text(json.dumps({"gate": "merge", "info": "abc init\n a.py | 1 +"}))
+        self.assertEqual(json.loads(self.req(f"/api/run/{RID}")[1])["pending"]["info"], "abc init\n a.py | 1 +")
+        self.assertEqual(self.req(f"/api/run/{RID}/answer", {"approve": True})[0], 200)
+        self.assertEqual(json.loads((self.run_dir / "answer.json").read_text())["gate"], "merge")
+
     def test_answer_requires_pending_gate(self):
         self.assertEqual(self.req(f"/api/run/{RID}/answer", {"approve": True})[0], 409)
 

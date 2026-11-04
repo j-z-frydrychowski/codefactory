@@ -163,7 +163,8 @@ async function showRun() {
   next.append(st);
   if (d.pending) {
     const g = el('div', 'gate');
-    g.append(el('div', null, 'Zatwierdzić: ' + (d.pending.gate === 'spec' ? 'specyfikację' : d.pending.gate === 'plan' ? 'plan' : d.pending.gate) + '? (treść poniżej)'));
+    g.append(el('div', null, 'Zatwierdzić: ' + (d.pending.gate === 'spec' ? 'specyfikację' : d.pending.gate === 'plan' ? 'plan' : d.pending.gate === 'merge' ? 'merge do repo docelowego' : d.pending.gate) + '? (treść poniżej)'));
+    if (d.pending.info) g.append(el('pre', null, d.pending.info));
     const yes = el('button', 'yes', 'Zatwierdź'), no = el('button', null, 'Odrzuć');
     yes.onclick = () => answer(true); no.onclick = () => answer(false);
     g.append(el('div', null, ' '), yes, no);

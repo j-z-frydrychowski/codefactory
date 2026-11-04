@@ -5,9 +5,9 @@ je specyfikują, planują, budują, weryfikują i recenzują. Człowiek zatwierd
 tylko wybrane punkty (zależnie od trybu).
 
 Status: **zaimplementowane: kroki 1-3 oraz planner i reviewer z kroku 4** (adapter CLI, adapter `api` (**wyłączony** flagą `engines.API_ENABLED`, do czasu testu na prawdziwym modelu), intake, planner, zadania w osobnych git worktree (równolegle wg `depends_on` z planu, limit `max_parallel`),
-verify, reviewer, GUI; tryby `manual`/`guided`/`auto`). Brak: merge do repo docelowego.
+verify, reviewer, GUI; tryby `manual`/`guided`/`auto`). Merge do repo docelowego (`--target`, zawsze z zatwierdzeniem człowieka) działa.
 
-Użycie: `python factory.py "zrób skrypt, który liczy słowa w pliku"`; testy: `python -m unittest`.
+Użycie: `python factory.py "zrób skrypt, który liczy słowa w pliku" [--target <repo git>]`; testy: `python -m unittest`.
 Konfiguracja w `config.json` (silniki, role, komenda weryfikacji, limity).
 
 Weryfikacja (`verify`) to komenda uruchamiana w katalogu projektu; jej kod wyjścia decyduje o przejściu dalej, a agenci
@@ -24,6 +24,14 @@ Przerwany lub nieudany run wznowisz: `python factory.py --resume <id z runs/>` (
 zakończonych błędem). Wznowienie pomija zatwierdzone etapy i gotowe zadania, a nieukończone robi od zera; spec można
 przed wznowieniem poprawić ręcznie w `runs/<id>/spec.md`. Nie wznawiaj runu, który jeszcze działa.
 Runy można też startować z GUI (formularz u góry; wtedy bramki są zawsze w GUI).
+
+Merge: z `--target <ścieżka repo git>` (albo `target` w `config.json`; argument ma pierwszeństwo) po stanie `done` fabryka
+pokazuje commity i diffstat wyniku oraz pyta o bramkę `merge` (terminal albo GUI). Bramka obowiązuje we wszystkich trybach,
+także `auto`. Po zatwierdzeniu fabryka sprawdza, że target to repo git z czystym drzewem roboczym (inaczej odmawia i niczego
+nie zmienia), pobiera wynik do gałęzi `factory/<id runu>` i robi `git merge --no-ff` w aktualnej gałęzi targetu (z
+`--allow-unrelated-histories`, bo workspace ma własną historię). Konflikt: `merge --abort`, stan `failed: merge`, gałąź
+`factory/<id>` zostaje do ręcznego rozwiązania. Odrzucenie: `rejected: merge`, target nietknięty. Sukces zapisuje
+`merged=true` w `progress.json`; `--resume` runu `done` z targetem, ale bez `merged`, wraca do bramki merge.
 
 ## Cele
 
@@ -61,7 +69,7 @@ prompt człowieka
 | `guided` | spec i merge        |
 | `auto`   | tylko merge         |
 
-Trybu bez żadnych bramek (YOLO) świadomie nie ma. Merge zawsze zatwierdza człowiek.
+Trybu bez żadnych bramek (YOLO) świadomie nie ma. Merge zawsze zatwierdza człowiek (także w `auto`).
 
 ## Silniki
 

@@ -14,7 +14,7 @@ from engines import run_agent
 ROOT = Path(__file__).parent
 LOCK = threading.Lock()  # operacje na wspólnym repo: worktree add/remove i merge do głównej gałęzi
 GIT = ["git", "-c", "user.name=codefactory", "-c", "user.email=factory@localhost"]
-# Bramki zależne od trybu. Merge do repo docelowego zatwierdza człowiek zawsze (jeszcze nie zaimplementowany).
+# Bramki zależne od trybu. Bramka `merge` (do repo docelowego, gdy podano target) jest wymagana zawsze, w każdym trybie.
 GATES = {"manual": {"spec", "plan"}, "guided": {"spec"}, "auto": set()}
 
 
@@ -28,15 +28,16 @@ def agent(cfg, role, prompt, workdir):
 POLL = 0.5  # sekundy między sprawdzeniami odpowiedzi z GUI
 
 
-def approve(name, mode, run_dir=None, how="terminal"):
+def approve(name, mode, run_dir=None, how="terminal", info=""):
     """Bramka dla człowieka. how="gui": pending.json -> czeka na answer.json zapisany przez gui.py."""
-    if name not in GATES[mode]:
+    if name != "merge" and name not in GATES[mode]:
         return True
     if how != "gui":
+        info and print(info)
         return input(f"Zatwierdzić {name}? [t/n] ").strip().lower() == "t"
     pending, answer = run_dir / "pending.json", run_dir / "answer.json"
     answer.unlink(missing_ok=True)
-    pending.write_text(json.dumps({"gate": name}), encoding="utf-8")
+    pending.write_text(json.dumps({"gate": name, "info": info}, ensure_ascii=False), encoding="utf-8")
     print(f"[gate] czekam na decyzję w GUI: {name}")
     while True:
         try:
@@ -71,6 +72,35 @@ def git_try(cwd, *args):
     """Jak git(), ale bez wyjątku: zwraca (kod wyjścia, wyjście)."""
     p = subprocess.run([*GIT, *args], cwd=cwd, capture_output=True, text=True, encoding="utf-8")
     return p.returncode, p.stdout + p.stderr
+
+
+EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"  # stałe id pustego drzewa gita
+
+
+def merge_info(work, base):
+    """Co wejdzie do repo docelowego: lista commitów i diffstat całego wyniku runu (do bramki merge)."""
+    return (git(work, "log", "--oneline", base) + "\n" + git(work, "diff", "--stat", EMPTY_TREE, base)).strip()
+
+
+def merge_to_target(work, target, base, rid, log):
+    """Po zatwierdzeniu: gałąź factory/<rid> z workspace do targetu i `merge --no-ff` w jego aktualnej gałęzi.
+    Zwraca None przy sukcesie albo powód porażki. Przy konflikcie merge jest przerywany, a gałąź zostaje do ręcznej pracy."""
+    target, branch = Path(target), f"factory/{rid}"
+    if not target.is_dir() or git_try(target, "rev-parse", "--is-inside-work-tree")[0] != 0:
+        return f"{target} nie jest repo git"
+    if git_try(target, "rev-parse", "--verify", "-q", "HEAD")[0] != 0:
+        return f"{target} nie ma żadnego commita"
+    if git_try(target, "status", "--porcelain")[1].strip():
+        return f"drzewo robocze {target} nie jest czyste (zatwierdź lub schowaj zmiany); nic nie zmieniono"
+    code, out = git_try(target, "fetch", "-q", str(work), f"{base}:{branch}")
+    if code:
+        return f"fetch do {target} nie powiódł się:\n{out}"
+    # workspace ma własną historię (init), więc bez --allow-unrelated-histories merge by nigdy nie przeszedł
+    code, out = git_try(target, "merge", "--no-ff", "--allow-unrelated-histories", "-m", f"Merge run fabryki {rid}", branch)
+    if code:
+        git_try(target, "merge", "--abort")
+        return f"konflikt przy merge (przerwano); rozwiąż ręcznie: git merge {branch}\n{out}"
+    return None
 
 
 def parse_plan(text, max_tasks):
@@ -201,7 +231,8 @@ def resume(cfg, run_dir, mode=None):
     st = jload(run_dir / "status.json")
     if not st or not (run_dir / "workspace" / ".git").exists():
         raise ValueError(f"{run_dir} nie wygląda na run fabryki")
-    if st["state"] == "done":
+    prog = jload(run_dir / "progress.json") or {}
+    if st["state"] == "done" and (prog.get("merged") or not (cfg.get("target") or prog.get("target"))):
         return "done", run_dir
     return execute(cfg, run_dir, st["task"], mode or st["mode"])
 
@@ -317,7 +348,22 @@ def execute(cfg, run_dir, task, mode):
             save(done=sorted({*progress.get("done", []), n}))
         return err
 
-    return finish(run_tasks(tasks, run_one, cfg["limits"].get("max_parallel", 1), progress.get("done", [])) or "done")
+    err = run_tasks(tasks, run_one, cfg["limits"].get("max_parallel", 1), progress.get("done", []))
+    target = cfg.get("target") or progress.get("target")
+    if err or not target or progress.get("merged"):
+        return finish(err or "done")
+    save(target=str(target))
+    set_state("needs human: merge")
+    if not approve("merge", mode, run_dir, how, merge_info(work, base)):
+        return finish("rejected: merge")
+    set_state("running")
+    err = merge_to_target(work, target, base, run_dir.name, log)
+    if err:
+        log(f"[merge] {err}")
+        return finish("failed: merge")
+    log(f"[merge] wniesiono do {target} (gałąź factory/{run_dir.name})")
+    save(merged=True)
+    return finish("done")
 
 
 if __name__ == "__main__":
@@ -327,12 +373,15 @@ if __name__ == "__main__":
     ap.add_argument("--mode", choices=GATES)
     ap.add_argument("--approval", choices=["terminal", "gui"], help="gdzie zatwierdzać bramki (domyślnie z configu)")
     ap.add_argument("--verify", help="komenda weryfikacji albo nazwa presetu z configu (verify_presets); dla nowego runu")
+    ap.add_argument("--target", help="repo git, do którego po zatwierdzeniu trafi wynik (merge); też `target` w configu")
     ap.add_argument("--config", default=str(ROOT / "config.json"))
     a = ap.parse_args()
     if bool(a.task) == bool(a.resume):
         ap.error("podaj zadanie albo --resume RUN (jedno z dwóch)")
     cfg = json.loads(Path(a.config).read_text(encoding="utf-8"))
     cfg["approval"] = a.approval or cfg.get("approval", "terminal")
+    if a.target:
+        cfg["target"] = str(Path(a.target).resolve())
     if a.verify:
         cfg["verify"] = cfg.get("verify_presets", {}).get(a.verify, a.verify).replace("{root}", ROOT.as_posix())
     if a.resume:
